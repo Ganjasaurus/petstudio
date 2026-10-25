@@ -134,7 +134,7 @@ export class CreationFlow {
     const plan = {
       ref: this._ref('a'), kind, mode: 'attempt', origin: 'attempt', title: attemptTitle(pet.name, kind, tName),
       lessonId: null, parentId: null, itemId: null, seed, style: attempt.style ?? style, tags: styleTags(style),
-      saveOnComplete: true, generator: attempt.generator ?? null, data: this._sanitize(kind, attempt),
+      saveOnComplete: true, generator: attempt.generator ?? null, model: attempt.model ?? null, data: this._sanitize(kind, attempt),
     };
     const prev = this.subject;
     this._setSubject({ ...plan, phase: 'lesson', lessonData: data, sourceTitle: tName ?? thing(kind), loved: false, dismissed: false });
@@ -163,7 +163,7 @@ export class CreationFlow {
     const res = this._start({
       ref: this._ref('p'), kind: item.kind, mode: 'replay', origin: item.origin, title: item.title,
       lessonId: item.lessonId, parentId: item.parentId, itemId: item.id, seed: item.seed, style: item.style,
-      tags: [...item.tags], saveOnComplete: false, generator: item.generator, data: item.data,
+      tags: [...item.tags], saveOnComplete: false, generator: item.generator, model: item.model ?? null, data: item.data,
     }, { loved: item.favorite });
     if (res.ok) this.memory.recordSignal({ kind: 'perform', itemId: item.id, lessonId: item.lessonId });
     return res;
@@ -188,7 +188,7 @@ export class CreationFlow {
       item = this.gallery.add({
         kind: s.kind, origin: s.origin, title: s.title, data: s.data, lessonId: s.lessonId, parentId: s.parentId,
         petId: this.pet.id, petName: this.pet.name, seed: s.seed, generator: s.generator, style: s.style,
-        tags: s.tags, favorite: favorite || !!s.loved,
+        tags: s.tags, favorite: favorite || !!s.loved, model: s.model ?? null,
       });
       s.itemId = item?.id ?? null;
       if (item && s.lessonId && item.origin === 'attempt') this.memory.linkAttempt(s.lessonId, item.id);
@@ -238,7 +238,7 @@ export class CreationFlow {
     const prefs = sanitizeStyle(this.memory.prefs);
     const j = (k) => (((hashSeed(`${seed}:${k}`) % 1000) / 1000) * 2 - 1) * FLOW.styleJitter;
     const style = tag ? prefs : sanitizeStyle({ energy: prefs.energy + j('e'), order: prefs.order + j('o') });
-    const attempt = this.engine.compose(s.kind, source, { seed, style, traits: this.pet.traits, colors: this.pet.appearance });
+    const attempt = this.engine.compose(s.kind, source, { seed, style, traits: this.pet.traits, colors: this.pet.appearance, lessonId: lesson?.id ?? null });
     if (signalKind) this.memory.recordSignal({ kind: signalKind, itemId: s.itemId ?? null, lessonId: s.lessonId ?? null });
     const own = `${this.pet.name}'s `;
     const starterBase = s.title?.startsWith(own) ? `its ${s.title.slice(own.length)}` : s.title;
@@ -251,8 +251,29 @@ export class CreationFlow {
       ref: this._ref('v'), kind: s.kind, mode: 'variation', origin: 'attempt', title,
       lessonId: s.lessonId ?? null, parentId: s.parentId ?? s.itemId ?? null, itemId: null, seed,
       style: attempt.style ?? style, tags: tag ? [tag, ...styleTags(prefs).filter((t) => t !== tag)] : styleTags(style),
-      saveOnComplete: true, generator: attempt.generator ?? null, data: this._sanitize(s.kind, attempt),
+      saveOnComplete: true, generator: attempt.generator ?? null, model: attempt.model ?? null, data: this._sanitize(s.kind, attempt),
     }, { lessonData: lesson?.demo ?? s.lessonData ?? null, sourceTitle: base }, message);
+  }
+
+  /**
+   * Performs a piece composed elsewhere (Sleep Practice's "after practice"
+   * version of a lesson): a new attempt linked to that lesson, saved to the
+   * gallery when the pet finishes it.
+   */
+  performComposed({ kind, data, lessonId = null, title = null, seed = null, style = null, generator = null, model = null } = {}) {
+    if (kind !== 'music' && kind !== 'drawing') return { ok: false, reason: 'bad-kind', message: 'Unknown piece.' };
+    const clean = this._sanitize(kind, data);
+    if (this._isEmpty(kind, clean)) return { ok: false, reason: 'empty', message: 'There is nothing to perform yet.' };
+    const lesson = lessonId ? this.memory.getLesson(lessonId) : null;
+    const taught = lesson ? this.gallery.list().find((it) => it.origin === 'taught' && it.lessonId === lesson.id) : null;
+    const base = lesson?.title ?? thing(kind);
+    return this._start({
+      ref: this._ref('n'), kind, mode: 'attempt', origin: 'attempt',
+      title: title ?? `${this.pet.name}'s practised take on ${base}`,
+      lessonId: lesson?.id ?? null, parentId: taught?.id ?? null, itemId: null,
+      seed: Number.isInteger(seed) ? seed >>> 0 : this._seed(), style: style ? sanitizeStyle(style) : null,
+      tags: styleTags(style ?? {}), saveOnComplete: true, generator, model, data: clean,
+    }, { lessonData: lesson?.demo ?? null, sourceTitle: base }, `${this.pet.name} shows off what it practised!`);
   }
 
   dismiss() {
@@ -405,6 +426,8 @@ export class CreationFlow {
       duration: ofSubject ? a.duration : 0,
       data: s.phase === 'lesson' ? s.lessonData ?? s.data : s.data,
       petName: this.pet.name,
+      generator: s.generator ?? null,
+      learned: s.generator === 'neural-v1',
     };
   }
 }

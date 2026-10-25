@@ -708,6 +708,21 @@ export function drawingSimilarity(a, b) {
   return roundTo(clamp(1 - d / 0.08, 0, 1), 3);
 }
 
+/** Strokes the pet adds of its own (its signature heart and flourishes), never part of a lesson. */
+export const PET_MOTIFS = Object.freeze(['signature', 'flourish']);
+
+/**
+ * How close an attempt is to the lesson it answers, in [0, 1]. Music: the
+ * overall phrase similarity. Drawing: shape similarity over the strokes
+ * that answer the lesson, leaving out the pet's signature and flourishes
+ * (they would otherwise skew the framing). Descriptive, not a score.
+ */
+export function lessonCloseness(kind, lesson, attempt) {
+  if (kind === 'music') return phraseSimilarity(lesson, attempt).overall;
+  const strokes = (attempt?.strokes ?? []).filter((s) => !PET_MOTIFS.includes(s.motif));
+  return drawingSimilarity(lesson, { ...attempt, strokes });
+}
+
 /**
  * Captures pen strokes. Feed it client-pixel samples plus the canvas rect;
  * it records the raw (x, y, pressure, dt, pen_state) stream and, on pen up,

@@ -1,6 +1,7 @@
 /**
  * particles.js: tiny pooled sprite particles for the studio: floating music
- * notes, sleepy Zzz, soap bubbles, hearts, sparkles and snack crumbs.
+ * notes, sleepy Zzz, soap bubbles, hearts, sparkles, snack crumbs and the
+ * dreamy notes and sparkles that drift up while the pet practises in its sleep.
  */
 import * as THREE from 'three';
 import { drawIcon } from './canvas-icons.js';
@@ -14,6 +15,8 @@ const KINDS = {
   heart: { icon: 'heart', size: [0.14, 0.2], life: [1.0, 1.4], vel: [0, 0.75, 0], spread: 0.4, sway: 0.2, grow: 0.2 },
   sparkle: { icon: 'sparkle', size: [0.12, 0.2], life: [0.7, 1.0], vel: [0, 0.4, 0], spread: 0.1, sway: 0, grow: -0.3, spin: true, radial: true },
   crumb: { icon: 'dot', size: [0.03, 0.05], life: [0.5, 0.8], vel: [0, 0.45, 0], spread: 0.3, sway: 0, grow: 0, gravity: 2.4, tint: true },
+  dreamNote: { icon: 'note', size: [0.1, 0.15], life: [2.6, 3.4], vel: [0.08, 0.24, 0.05], spread: 0.08, sway: 0.28, grow: 0.55, tint: true },
+  dreamStar: { icon: 'sparkle', size: [0.09, 0.14], life: [2.2, 3], vel: [0.06, 0.22, 0.06], spread: 0.1, sway: 0.22, grow: 0.35, tint: true, spin: true },
 };
 
 const rand = (lo, hi) => lo + Math.random() * (hi - lo);

@@ -1,367 +1,515 @@
-# Pet Studio: Iterations 1 and 2
+# Pet Studio: Iterations 1 to 3
 
-A cozy 3D creative pet that lives in a miniature studio: it gets hungry, sleepy and bored,
+A cozy 3D creative pet that lives in a miniature studio. It gets hungry, sleepy and bored,
 walks between five stations, plays little tunes, paints on a live easel, splashes in the
-bath and naps in its nook. You can feed, wash, rest, pet and praise it, send it to make
-music or art, and customize its look and temperament.
+bath and naps in its nook. You can care for it, teach it tunes and drawings, and watch its
+own takes in the Creation Gallery.
 
-**Iteration 2** (Milestones 3 and 4 of the plan) adds teaching. In the **Teaching
-Workshop** you play a tune or draw a picture. Your pet listens, walks to the Music Corner
-or the Easel, and performs its own take. A **Creation Feedback Bar** lets you love it, ask
-for a variation, or guide it calmer, livelier, neater or wilder. The **Creation Gallery**
-keeps your lessons and the pet's work, compares a lesson with the pet's attempt side by
-side, and hangs a drawing in the frame on the studio wall.
+**Iteration 3** (Milestones 5, 6 and 7 of the plan) adds genuine on-device learning. Each pet
+owns two small neural networks that train in the page, with Float32 tensors, analytic
+backpropagation and Adam, on the lessons you taught it:
 
-Iteration 1 covered **Milestones 1 and 2**: the foundational architecture, the 3D studio,
-the stylized customizable pet, the care-and-personality loop, the build and the tests.
-Genuine on-device learning (Sleep Practice) and developer diagnostics (Inspector) are
-Iteration 3; their hooks stay wired as placeholders.
+* **Sleep Practice:** the pet naps in its Sleep Nook while the networks train in time
+  slices. You see live losses, a loss chart and what it is dreaming about, and you can
+  pause, step, cancel and roll back. Afterwards a before-and-after card compares its attempts.
+* **Learning Inspector:** sizes, weights, checkpoints with rollback, the training data, a
+  fair evidence check, and a table of what is learned versus authored.
+
+Once a network has trained, the pet's attempts blend in what it learned and are labelled
+**Learned** (generator `neural-v1`).
+
+Iteration 3 also fixes four layout issues found in the Iteration 2 screenshots (see
+[Layout fixes](#iteration-3-layout-fixes)). Iteration 2 added the Teaching Workshop, the
+Creation Feedback Bar and the Gallery; Iteration 1 built the studio, the pet and the care loop.
 
 > **Scope note.** `ASTRA_SPEC.md` targets a *native iPhone* app (SwiftUI + RealityKit).
-> By explicit direction this iteration is a responsive **Three.js web app** instead.
-> That is fine for the studio, care loop and in-browser training planned next, but some
-> spec items cannot be met by a browser and will need a decision later: native background
-> training (BackgroundTasks) and nearby exchange (Multipeer Connectivity). Nothing here
-> claims otherwise.
+> By explicit direction this project is a responsive **Three.js web app** instead. The
+> learning loop runs in the foreground only: training happens while the page is open and
+> the pet naps, and nothing trains while the app is closed or the tab is hidden. Native
+> background processing (BackgroundTasks) and nearby exchange (Multipeer Connectivity) are
+> not implemented and nothing here claims otherwise.
 
 ## Quick start
 
 ```bash
 npm install
 npm run build   # bundles src/main.js -> dist/app.js (esbuild, ESM, es2022) + copies index.html, styles.css
-npm test        # node:test suites in tests/ (114 cases)
+npm test        # node:test suites in tests/ (143 cases)
 npm run dev     # serves dist/ at http://localhost:4188 (python -m http.server)
-npm run verify  # builds, then drives headless Edge through every Iteration 2 flow at three viewports
+npm run verify  # builds, then drives headless Edge through every flow at three viewports
 ```
 
 `npm run verify` (scripts/verify-ui.mjs) needs Microsoft Edge or Chrome
-(`PETSTUDIO_BROWSER=/path/to/browser` overrides the lookup). A full run takes about
-15 minutes with software rendering; `node scripts/verify-ui.mjs --only=phone`
-(or `tablet`, `desktop`) runs one device. Screenshots and JSON reports go to `artifacts/verify/`.
+(`PETSTUDIO_BROWSER=/path/to/browser` overrides the lookup). With software rendering a
+full run takes 30 to 40 minutes; `node scripts/verify-ui.mjs --only=phone` (or `tablet`,
+`desktop`) runs one device. Screenshots and JSON reports go to `artifacts/verify/`.
 
 `node build.mjs --dev` builds unminified with inline source maps; `node build.mjs --watch`
 rebuilds on change. Everything runs offline: no fonts, models, textures or sounds are
-downloaded. All geometry, textures and audio are generated procedurally on the device.
+downloaded. Geometry, textures and audio are generated on the device, and the networks
+start from a deterministic baseline computed at load time (see below).
 
 ### Playing
 
 * **Dock:** Feed, Wash, Rest/Wake, Pet, Praise, Go Play Music, Go Draw, Customize, and the
-  Workshop group: **Teach** and **Gallery**, plus the Iteration 3 placeholders. On phones
-  and tablets the Workshop group lives in the **More** sheet, where Teach and Gallery open
-  with one tap.
-* **Tap the pet** to pet it; **tap a station** to send it there (Snack Bar = feed, Bubble
-  Bath = wash, Sleep Nook = rest/wake, Music Corner, Easel, Rug = sit and listen).
-  **Tap the picture frame** on the left wall to open the Gallery.
-* **Camera:** drag to orbit, pinch or scroll to zoom, or pick Overview, Pet Close-Up,
-  Music Station, Easel or Sleep Nook in the top bar.
-* **Keys (desktop):** F feed, W wash, R rest/wake, P pet, G praise, J music, D draw,
-  L listen, C customize, T teach, Y gallery, M mute, 1-5 or V camera views. In the
-  Teaching Workshop's Music tab the keyboard plays notes (A W S E D F T G Y H U J K…, from
-  C4) and Z X C V play the pads. Keys and pads also respond to Tab plus Enter or Space.
-* First launch opens the pet creator ("Meet your new pet!"). Progress is saved in
-  `localStorage` and restored on return.
+  Workshop group: **Teach**, **Gallery**, **Practice** and **Inspector**. On phones and
+  tablets the Workshop group lives in the **More** sheet.
+* **Tap the pet** to pet it (it snuggles even while practising in its sleep). **Tap a
+  station** to send it there. **Tap the picture frame** to open the Gallery.
+* **Camera:** drag to orbit, pinch or scroll to zoom, or pick a view in the top bar.
+* **Keys (desktop):**
+  * Care and studio: F feed, W wash, R rest/wake, P pet, G praise, J music, D draw, L listen,
+    C customize.
+  * Features: T teach, Y gallery, **Z Sleep Practice**, **I Inspector**.
+  * General: M mute, 1-5 or V camera views.
+  * In the workshop's Music tab, the keyboard plays notes and Z X C V play the pads.
+* First launch opens the pet creator. Progress, lessons, creations and learned weights
+  are saved in `localStorage`.
 
-URL options (handy for demos and automation): `?skipIntro=1` skips the creator, `?seed=abc`
-gives a deterministic new pet, `?reset=1` deletes the saved pet, its lessons and its
-gallery, `?mute=1`, `?speed=4` (simulation time scale), `?view=pet|music|easel|sleep|overview`.
+URL options: `?skipIntro=1`, `?seed=abc` (deterministic new pet), `?reset=1` (deletes the
+pet, its lessons, gallery and learned model), `?mute=1`, `?speed=4` (simulation time scale),
+`?view=pet|music|easel|sleep|overview`.
+
+## Iteration 3: on-device learning
+
+### The two networks (`src/neural-engine.js`)
+
+| Network | Layers | Trainable float32 parameters | What it predicts | Loss |
+| --- | --- | --- | --- | --- |
+| **MusicPolicyNet** | 75 → 32 tanh → 26 | 3,290 | For each eighth-note slot: whether a note starts, its pitch over the 22 keys (C4 to A5), its duration, its velocity, and a tempo modulation | Binary cross-entropy (onset), categorical cross-entropy (pitch), squared error (duration, tempo), BCE (velocity) |
+| **StrokePolicyNet** | 42 → 40 tanh → 13 | 2,253 | Along each stroke: tangent and normal offsets from a smoothed reference path, pen pressure, width, steadiness, and a colour over the 8 paints | Squared error (offsets, width), BCE (pressure, steadiness), cross-entropy (colour) |
+
+That is **5,543 trainable parameters** in total, 21.7 KiB per checkpoint. Both networks
+are plain two-layer perceptrons on one flat `Float32Array` each. The forward pass, the
+backward pass and the optimizers are written out by hand; there is no ML library.
+
+**Inputs (shared fixed features, never trained).**
+
+* **MusicPolicyNet** is autoregressive. It sees:
+  * the previous pitch (one-hot) and the last interval;
+  * the gap since the last onset, the beat phase, the bar and the phrase position;
+  * the pet's temperament (7 traits) and the player's style guidance (energy, order);
+  * a 20-number embedding of the lesson it is attempting: its pitch-class profile,
+    register, range, density, mean duration and velocity, tempo and length.
+* **StrokePolicyNet** sees:
+  * the position `t` along the stroke, with Fourier features;
+  * the smoothed reference point, tangent and curvature (here and 0.04 either side);
+  * stroke features: index, length, closedness, bounding box, centroid, width, dot flag
+    and colour;
+  * temperament and style.
+* The smoothed reference resamples each stroke to 96 points and applies four `[1 2 1]/4`
+  passes. The network learns to restore the detail that smoothing removes.
+
+**Baseline.** A seeded Xavier initialisation, identical for every pet. The output layer
+starts at zero, and its biases are set from statistics of the bundled starter repertoire:
+
+* the onset rate, pitch histogram, mean duration and velocity measured over the four tune
+  templates and 16 starter phrases;
+* a neutral stroke prior with a low "steadiness".
+
+An untrained network therefore predicts exactly that prior. The baseline is recomputed at
+load time and is never stored.
+
+**Training data (the replay buffer).** `trainingDataFrom()` reads the teaching memory and the gallery.
+
+* **Demonstrations** are the supervised targets, weight 1.0.
+* **Style copies:** once you have nudged, each lesson also appears in your current style,
+  with that style as the network's style input. Weight 0.35, plus 0.1 per nudge on that
+  axis, up to 0.8. The transforms are documented and deterministic:
+  * calmer: slower, fewer and longer notes, softer;
+  * livelier: faster, eighths, louder;
+  * neater: leaps compressed to two scale steps, less stroke detail;
+  * wilder: leaps widened, extra wobble, lower steadiness.
+* **Preferences:** loved or starred creations of the pet are reward-weighted examples,
+  weight 0.5 × reward. They are never treated as corrected labels.
+* **Label smoothing** keeps the networks from being confidently wrong about notes they
+  never saw:
+  * onset targets are 0.08 and 0.92;
+  * pitch targets put 30% of their mass on the lesson's own note distribution;
+  * colour uses 10% uniform smoothing.
+  Losses are reported as KL divergences, so a perfect fit scores 0.
+* **Held-out split, made before any augmentation:**
+  * music: exactly 1 in 5 of each lesson's note slots and 1 in 5 of its silent slots,
+    picked by hash;
+  * drawing: about 1 in 5 stroke samples, by hash.
+  A style copy of a held-out position is held out too.
+
+**Optimisation.**
+
+* Adam (learning rate 0.008, β 0.9 / 0.999); momentum SGD is selectable in the Inspector.
+* Mini-batches of 24 are sampled with replay: 50% the newest lesson, 35% older lessons,
+  15% preference and style examples.
+* The global gradient norm is clipped at 4.
+* An L2 *prior anchor* (2e-4) pulls the weights toward the untrained baseline.
+* One practice step updates each network that has data.
+* All of these are developer settings in the Inspector.
+
+**Sessions, validation and rollback** (`PracticeSession`). `computeValidationLoss()`
+evaluates the held-out set deterministically every 20 steps.
+
+* Each network is judged on its **own** held-out set.
+* **Noise allowance.** One short tune holds out only two or three notes, so the
+  comparisons carry a noise allowance of 2/√n nats: about two standard errors.
+* **Practice stops on worsening.** A network whose held-out loss stays above its pre-sleep
+  level (plus the margin and allowance) for 3 checks stops practising.
+* **At the end of a session:**
+  * a network that clearly overfitted returns to its best weights; this only applies with
+    at least 8 held-out samples;
+  * a network that ends more than 10% above its pre-sleep loss (plus the allowance) is
+    rolled back to its pre-sleep weights;
+  * NaN or Infinity anywhere rolls the whole session back at once.
+* The data is frozen for the duration of a session, so "before" and "after" stay comparable.
+
+**Checkpoints and storage.** Record `petstudio.model.v1` (+ `.bak`), schema
+`petstudio.model` version 1, about 118 KiB. It holds at most five checkpoints:
+
+* `untrained`: regenerated, never stored;
+* `pre-sleep`;
+* `latest`: with Adam moments, for faithful resumption;
+* up to two user snapshots.
+
+Plus progress counters, a 240-point loss history and the settings.
+
+* **Partial checkpoints.** Validated progress is checkpointed every 60 steps, so a reload
+  keeps it. The next launch says that practice stopped when the app closed; nothing is
+  claimed to have trained while it was closed.
+* **Load-time checks.** Loading validates the architecture, dimensions, base64 lengths and
+  finite values (|w| ≤ 1000). It falls back to the backup when the `latest` checkpoint is
+  damaged, keeps future versions aside (`.future`), and moves another pet's model or an
+  incompatible architecture aside (`.orphan`). On a quota error the backup copy is
+  dropped first.
+
+**How attempts use the networks** (`src/hybrid-engine.js`).
+`HybridCreativeEngine.compose()` keeps the same interface as the authored engine.
+
+* **While a network has no training steps,** its kind is composed by the authored rules
+  (generators `imitate-phrase-v1` / `imitate-draw-v1`).
+* **After training,** the network is blended in with weight
+  α = (1 − e^(−steps/100)) × (0.25 + 0.75 × familiarity), and the output is tagged
+  `neural-v1` with its steps and α. Familiarity, 1 − e^(−n/40), counts the steps that
+  practised this lesson. A lesson the pet never practised gets at most a quarter of the
+  learned weight. A tune or drawing re-taught with identical content is recognised by a
+  content fingerprint. The Practice drawer shows α as "Learned confidence": it is a schedule,
+  not a quality score.
+* **Music:** each slot blends logits, (1 − α) × the authored attempt + α × the network.
+  * The weight shrinks where the network is unsure.
+  * Positions held out for validation, which were never trained, get the unpractised
+    quarter weight.
+  * Percussion stays authored.
+* **Drawing:** every point moves α of the way from the authored wobble toward the
+  network's reconstruction; pressure, width and colour blend the same way. The learned
+  steadiness damps the authored placement jitter (tilt, scale, shift). With α = 0 the
+  output is identical to Iteration 2.
+* **Model version.** Gallery items and pending plans store the model tag
+  (`{ steps, alpha }`) of the network that made them.
+
+### Sleep Practice (`src/practice-runner.js`, `src/sleep-practice.js`)
+
+Registered with `features.register('practice', ...)`.
+
+**Opening it.**
+
+* The pet walks to the Sleep Nook and falls asleep. It does so even when it is not sleepy
+  and is never stubborn about it; the nap is *held* while it practises.
+* The camera frames the nook beside the drawer. The drawer is non-modal, so the studio
+  stays live and touchable.
+* Dream notes or sparkles drift up from the pet. A thought bubble shows a note or a brush.
+* The status pill reads "Practising in its dreams".
+
+**Running.**
+
+* `PracticeRunner.tick()` runs inside the frame loop and is pure, so it is testable in Node.
+* It paces training at 16 steps a second, a developer setting, and never starts a step
+  after 4 ms of the frame have been used.
+* Statuses are truthful: waiting, practicing, paused, complete, rolled back, cancelled.
+
+**The drawer shows:**
+
+* **Dreaming about:** the lesson most present in recent batches, with a live preview of
+  the network's own version of it drawn over a faint copy of the lesson. The preview is
+  redrawn as the weights change.
+* **Counters:** Training Steps, Epoch · Batch, Training Loss (moving average of batch losses), Validation
+  Loss (was …), Weight Change ‖Δθ‖ since practice began, and Learned Confidence.
+* **Loss chart:** an SVG with a log scale. The training loss is a solid line and the
+  validation loss a dashed line, and session marks are drawn as dotted lines.
+* **Controls:** Start / Resume (Practise Again), Pause, Step +1, Cancel & Rollback (restores
+  the pre-sleep weights) and Wake & Finish.
+
+**After a session, Before practice vs after practice** compares the pet's attempts with the
+pre-sleep weights and with the new ones. Both use the same six seeds, style and temperament.
+
+* The card shows closeness to the lesson averaged over the six tries, and which generator
+  made each side.
+* **Have Pet Perform New Learned Version** wakes the pet and performs the "after" attempt.
+  It is saved to the Gallery tagged Learned.
+
+### Learning Inspector (`src/learning-inspector.js`)
+
+Registered with `features.register('inspector', ...)`. It is a centred sheet on desktop and
+a bottom sheet on phones, and it shows:
+
+* **Networks:** layers, parameter counts, ‖θ‖, ‖θ − θ₀‖, steps in the weights, step
+  confidence, held-out loss and sample counts, and the mode: authored or `neural-v1`.
+* **Replay buffer:** lessons, training and held-out examples by role, love signals, nudge
+  counts, style guidance and the replay mix.
+* **Checkpoints:** a table with Rollback per row, plus Run 10 Training Steps (a short
+  validation-gated session that needs no nap), Save Checkpoint and Reset Model to Untrained
+  (asks for a second tap; lessons are kept).
+* **Evidence:** closeness to each lesson with the same four seeds. The columns are
+  authored (α 0), *untrained weights at today's α*, and learned now. The middle column
+  separates what training learned from the blend schedule.
+* **What is learned and what is authored:** an explicit table (see below).
+* **Settings:** learning rate, batch size, steps per session, practice pace, replay share,
+  prior anchor and optimizer.
+
+### Measured results (Node 24, Windows 10, AMD FX-6300)
+
+These are measurements, not guarantees. They come from scripted runs of the real modules
+(`tests/neural-engine.test.mjs` asserts the same effects).
+
+* **Music** (`artifacts/scratch/eval-music.mjs`, not shipped): 11 tunes × 7 pet
+  temperaments = 77 cases. The tunes are the 4 templates, the verification tune and 6
+  random user-like tunes. Each case is one 240-step session, and closeness is averaged over
+  6 fixed seeds.
+  * Mean closeness to the lesson rose by **+0.080**: 70 cases improved and **none got
+    worse**.
+  * In 7 cases (all one irregular tune) memorising it made its held-out notes 2.5× worse,
+    so the gate **rolled the session back** and the pet kept its authored behaviour. That
+    is the safety net working as intended.
+* **Drawing:** 11 drawings × 7 temperaments = 77 cases. The drawings are the 5 stamps and 6
+  hand-drawn-style lessons with wobble and varying pressure.
+  * Mean closeness rose by **+0.025**: 70 improved, none worse, none rolled back.
+  * Gains are largest for loose (chaotic) pets: +0.09 on hand-drawn lessons.
+* **Fair control:** untrained weights at the same α do not reproduce the gains. The tests
+  assert "trained > untrained at the same α" for music and drawing.
+* **Replay:**
+  * after training lesson A and then lesson B, A keeps **74%** of its loss improvement
+    with replay;
+  * with replay switched off it keeps **−4%**: completely forgotten.
+* **Nudges are learned:**
+  * after practice with "calmer ×2", the network's own tunes average 94 BPM against 104
+    for a neutral pet. They are softer (velocity 0.59 against 0.74) and sparser, and its
+    lines thinner (width 0.021 against 0.026);
+  * "livelier ×2" averages 114 BPM, louder (0.81) and bolder (0.031);
+  * "wilder ×2" widens the pitch range (11.5 against 8.75 semitones) and lowers the
+    learned steadiness (0.97 to 0.57).
+* **Cost,** on an idle 2012-era desktop CPU:
+  * 1.6 to 1.9 ms per practice step for both networks (batch 24 each): 1.0 ms for music
+    and 0.6 ms for drawing;
+  * a validation pass takes 0.1 to 1.6 ms for one tune and one 9-stroke drawing;
+  * composing an attempt takes about 1 ms for music and about 7 ms for that drawing;
+  * the model record is 120,727 bytes with two checkpoints.
+
+Software-rendered browser runs say nothing about phone GPU or thermal behaviour. None of
+this was measured on a physical device.
+
+### Iteration 3 layout fixes
+
+1. **Dock vs. side drawers.**
+   * `#dock` is centred in the safe lane:
+     `left: calc(var(--safe-left) + var(--safe-width) / 2)`,
+     `max-width: calc(var(--safe-width) - 24px)`.
+   * `layout()` computes the lane as the screen minus any side drawer. The desktop needs
+     panel ends far above the dock, so it does not count.
+   * The dock then picks the roomiest layout that fits: full labels, short labels,
+     compact (More), or two rows. So it sits beside the Workshop, Customizer or Practice
+     drawer and never under it.
+   * Toasts follow the lane.
+   * `layout()` reports `dock.overlapsPanel`, `dock.insideLane` and `dock.hidden`, and
+     verification asserts them at every step.
+2. **Dock under centred sheets.** While the Gallery, the More sheet or the Inspector is
+   open, the dock fades out (`opacity: 0; visibility: hidden; pointer-events: none`), so
+   no half-covered buttons peek out.
+3. **Phone Drawing tab.**
+   * All five shapes fit on one row with short names ("Sun"), and the starter tunes do
+     too; there is no scroll fade or cut chip.
+   * The canvas sits beside a two-column colour grid and a vertical brush picker, so it
+     is larger than before (≈270 px).
+   * Stamp | Trace moved down beside Undo, Clear and Replay.
+   * On phones the honesty note became one short line in the footer, so the sticky
+     footer can never slice it. The workshop body fades at its bottom edge while more is
+     below.
+   * `layout()` reports `slicedNotes`. Buttons use `touch-action: manipulation`.
+4. **Camera after a performance.** When a taught (or gallery) performance ends and the pet
+   walks away from the station the camera had aimed at, it returns to the overview, which
+   keeps the pet in the safe area. A view you picked yourself is never overridden.
+
+Also fixed:
+
+* The Sleep Nook view is centred higher, so a pet curled up in the cushion stays in frame.
+* `StudioScene.resize()` no longer re-assigns an unchanged canvas size, which used to clear
+  the WebGL canvas for a frame.
 
 ## Iteration 2: teaching, feedback and the gallery
 
-### Teaching Workshop (`src/teaching-workshop.js`)
-
-Registered as the real `teach` feature with `features.register('teach', …)`. The sheet is
-positioned like the Customizer: a bottom sheet on phones and tablets, a right-hand drawer on
-desktop. The camera frames the pet in the space left over, so it stays visible, and it
-glances over with interest while you play or draw. On phones the needs meters step aside
-while the sheet is open to give the pet more room.
-
-* **Music tab.** A touch and mouse keyboard covers the studio keyboard's range, C4 to A5.
-  By default it shows pentatonic bars (C D E G A); **All notes** switches to a piano layout
-  with all 22 keys, split into two stacked octaves on narrow screens. Tapping lower on a key
-  plays it louder, and you can slide across keys. Four rhythm pads (Boom, Clap, Tick, Tock),
-  a live beat timeline (8 or 16 beats; tap a note to remove it) and starter tunes (**Sunny
-  Arp, Bouncy Walk, Starlight Lullaby, Playful Hop**) round it out.
-  * **Taps are always captured.** Without Record they land in free time: spacing is kept at
-    the current tempo, quantized to eighth notes, and gaps are capped at one beat so slow
-    one-note-at-a-time playing becomes a steady line.
-  * **Record** gives a one-bar count-in, then a metronome pass that overdubs onto the phrase.
-  * The controls are **Preview**, Undo, **Clear**, tempo (60 to 160 BPM) and **Teach Pet**.
-* **Drawing tab.** A pressure-aware stroke canvas works with touch, pen and mouse, with 8
-  colours and 3 brush sizes. **Undo Stroke**, **Clear** and **Replay Strokes** are
-  provided; replay uses the original pen timing, pauses included. Shapes (**Star, Heart,
-  Flower, Smiling Sun, Spiral**) can be **stamped** in the current colour and brush, or
-  shown as a dotted **trace** guide.
-* **Teach Pet.** The pet stops, turns to you and listens attentively (a `lesson` activity
-  with a curious face and a listening bubble) while the tune plays from the speakers or
-  while it studies the drawing.
-  * The demonstration is stored in the pet's teaching memory with its full representation.
-  * The pet then walks to the Music Corner and plays its own take on the 3D keyboard
-    (black keys included), or walks to the Easel and paints its take progressively.
-  * The camera follows the pet and then shows the station. Unfinished drafts survive
-    closing the sheet and reloading.
-
-### Creation Feedback Bar (`src/hud.js`, `src/main.js`)
-
-A compact bar floats above the dock while the pet listens, performs or has just finished
-(it stays for 30 s). It shows a live thumbnail with a playhead or progressive drawing, a
-title, an origin badge and progress. The studio is framed above it, so it never covers the
-pet. It takes 3 rows on phones, 2 on tablets and 1 on desktop.
-
-* **Love It.** Saves the creation to the Gallery as a favourite (immediately, even
-  mid-performance), boosts Bond and Mood, and records a `+1.0` preference signal on that
-  creation.
-* **Try Variation.** The pet immediately tries again with a new seed and a slightly tweaked
-  style. It riffs on the original lesson, not on its own riff.
-* **Calmer / Livelier / Neater / Wilder.** Each one moves the pet's style guidance one step
-  on that axis, stores a direction signal, and starts a guided retry tagged with that
-  direction.
-
-After a piece the pet lingers for a moment before wandering off, which gives you time to
-react. Its own autonomous starter songs and drawings get the bar too.
-
-### Creation Gallery and the wall frame (`src/gallery.js`)
-
-Registered as the real `gallery` feature with `features.register('gallery', …)`.
-
-* Songs and drawings are listed newest first. Each card shows its **origin badge**
-  (Starter, Taught by You or Pet Attempt), timestamp, title, favourite star and direction
-  tags. Filters: All, Songs, Drawings, Favourites.
-* **Perform / Redraw** sends the pet to play the song at the Music Corner or redraw the
-  picture on the easel. **Listen** plays a song inside the sheet.
-* **Hang on Wall** (drawings) pins the picture in the left-wall frame of the 3D studio with
-  a brass title plaque and rosette, then the camera visits it. The pin persists across
-  reloads; **Take Down** reverts the frame to the newest drawing.
-* **Compare** puts any two songs, or any two drawings, side by side (older on the left).
-  You can play both one after the other or replay both drawings together. Attempts also
-  have a one-tap **Compare with your lesson**. A descriptive readout shows shared rhythm and
-  melody similarity for songs, and shape overlap for drawings. It is labelled as a
-  description, not a score.
-* **Favourite / Delete.** Delete asks for a second tap.
+* **Teaching Workshop** (`src/teaching-workshop.js`).
+  * **Music tab:** a keyboard (pentatonic bars, or all 22 keys), four rhythm pads, a beat
+    timeline, starter tunes, Record with a count-in, Preview, Undo, Clear and tempo.
+  * **Drawing tab:** a pressure-aware canvas with colours, brushes, Undo, Clear and Replay,
+    and shapes to stamp or trace.
+  * **Teach Pet:** the pet listens or studies, walks to its station and performs its own take.
+* **Creation Feedback Bar** (`src/hud.js`): Love It, which saves the piece and records a
+  `+1.0` preference; Try Variation; and Calmer, Livelier, Neater or Wilder, which records a
+  direction and starts a guided retry. A **Learned** chip marks `neural-v1` pieces.
+* **Creation Gallery** (`src/gallery.js`):
+  * origin badges, plus a Learned badge with the model's steps and α in its tooltip;
+  * Perform or Redraw, Listen, Hang on Wall, and Compare with a descriptive similarity
+    readout;
+  * Favourite and Delete.
 
 ## Architecture
 
 | Module | Responsibility |
 | --- | --- |
-| `src/pet-state.js` | Pet identity, appearance, temperament, needs, the autonomous activity state machine, care actions, reactions, time away, serialisation, sanitisation and `localStorage` persistence. Iteration 2 adds the `lesson` activity and *creation plans* (an opaque `ref`, a kind and a fixed duration) that flow from lesson to walking to performing. The simulation only schedules them; it never invents content. Pure JS, no DOM or Three.js, so it is fully testable in Node. |
-| `src/studio-layout.js` | Shared floor plan: station positions, approach points, facing, path planning. Used by both the simulation and the renderer. |
-| `src/starter-repertoire.js` | Authored, seeded generators for starter drawings (vector strokes) and pentatonic phrases. Outputs are tagged `source: 'starter'` plus a generator version. |
-| `src/rng.js` | Seeded PRNG helpers (mulberry32, FNV-1a), so behaviour is reproducible. |
-| `src/teaching-core.js` | *Teaching-example capture* (pure): phrase and stroke representations, sanitisation of untrusted data, `PhraseRecorder` (free time and metronome passes, quantization, undo), `StrokeRecorder` (raw `x, y, pressure, dt, pen_state` normalised and resampled to even arc length), templates, and descriptive similarity metrics. |
-| `src/creative-engine.js` | `AuthoredCreativeEngine`: seeded, hand-written variation rules that turn a lesson into the pet's attempt. This is the replaceable `compose(kind, source, opts)` interface a learned controller will implement later. Style guidance (energy, order) and temperament steer it. |
-| `src/teaching-memory.js` | The pet's teaching memory (replay buffer): lessons, labelled feedback signals, style guidance and the pending plan. Bounded and versioned. |
-| `src/gallery-store.js` | The Creation & Teaching History: up to 40 songs and drawings with origins, favourites, tags, feedback and the wall pin. Bounded, versioned and quota-resilient. |
-| `src/persist.js` | Shared versioned `localStorage` records: last-known-good backup, torn-write fallback, future-version preservation. |
-| `src/creation-flow.js` | The teaching loop (pure): teach, then listen, walk, perform, save and link to the lesson; gallery replays; Love It, Try Variation and nudges; the feedback bar's state; resuming a planned piece after a reload. |
-| `src/studio-scene.js` | Three.js diorama: room, five stations, the gallery wall frame with title plaque, lights and shadows, particles, picking, and the camera rig (presets, damping, responsive framing, `settled` state). |
-| `src/pet-model.js` | Procedural cel-shaded pet: body, head, ears, tails, canvas-texture face with eased expressions and blinking, mood bubble, every procedural animation (including the attentive lesson pose), and outline points for layout checks. |
-| `src/toon.js`, `src/canvas-icons.js`, `src/particles.js` | Shared toon materials and outlines, vector icon painter, pooled sprite particles. |
-| `src/drawing-surface.js`, `src/creation-render.js` | Progressive stroke renderer behind the easel's live texture; stateless painters for drawings, trace guides and piano rolls, shared by the workshop, gallery, bar and wall frame. |
-| `src/audio.js` | WebAudio: synthesised plucked voice for note events, synthesised percussion (kick, clap, hat, wood block), a metronome, soft care sounds, procedural room reverb, persisted mute. |
-| `src/hud.js`, `src/customizer.js` | DOM UI: top bar, meters, dock, toasts, tips, the More sheet, the Creation Feedback Bar, and the pet creator/customizer. |
-| `src/teaching-workshop.js`, `src/gallery.js` | The Teaching Workshop and Creation Gallery sheets. Each registers itself through `features.register`. |
-| `src/main.js` | Composition root: wiring, frame loop, layout and framing, saving, camera automation for teaching flows, `window.__PET_STUDIO__`. |
-| `scripts/` | Development tooling only (not shipped): a dependency-free CDP harness (`cdp-harness.mjs`), the multi-device verification (`verify-ui.mjs`) and quick screenshots (`look.mjs`). |
+| `src/pet-state.js` | Pet identity, needs, autonomy state machine, care actions, creation plans, the held practice nap (`startPracticeNap`), persistence. Pure. |
+| `src/studio-layout.js`, `src/rng.js`, `src/starter-repertoire.js` | Floor plan and paths; seeded PRNG; authored starter songs and doodles. |
+| `src/teaching-core.js` | Phrase and stroke representations, capture (recorders), sanitisation, templates, descriptive similarity and `lessonCloseness`. Pure. |
+| `src/creative-engine.js` | `AuthoredCreativeEngine`: seeded variation rules. Its drawing path accepts the optional learned hand. |
+| `src/neural-engine.js` | **Local learning:** features, `MLP`, `PolicyNet`s, datasets and replay, Adam/SGD, validation, `PracticeSession`, checkpoints, persistence. Pure, deterministic. |
+| `src/hybrid-engine.js` | `HybridCreativeEngine`: authored rules blended with the trained networks (α). |
+| `src/practice-runner.js` | **Training scheduling:** Sleep Practice sessions over the pet's nap, frame-budgeted pacing, partial checkpoints, before/after comparison. Pure. |
+| `src/teaching-memory.js`, `src/gallery-store.js`, `src/persist.js` | Teaching memory (replay buffer), creation history, versioned storage with backups. |
+| `src/creation-flow.js` | The teaching loop: lessons, performances, feedback, `performComposed` for learned versions. Pure. |
+| `src/studio-scene.js`, `src/pet-model.js`, `src/particles.js`, `src/toon.js`, `src/canvas-icons.js` | 3D studio, camera rig, the pet, particles (including dream notes). |
+| `src/drawing-surface.js`, `src/creation-render.js`, `src/audio.js` | Progressive easel, 2D painters, WebAudio synthesis. |
+| `src/hud.js`, `src/customizer.js`, `src/teaching-workshop.js`, `src/gallery.js`, `src/sleep-practice.js`, `src/learning-inspector.js` | DOM UI. Each feature registers itself with `features.register`. |
+| `src/main.js` | Composition root: wiring, frame loop (simulation, practice tick, rendering), layout and the dock lane, camera automation, saving, `window.__PET_STUDIO__`. |
+| `scripts/` | Development tooling (not shipped): CDP harness, multi-device verification, quick screenshots. |
 
-### What is authored and what learns
+### What is authored, what is remembered, and what learns
 
-Iterations 1 and 2 contain **no machine learning**, and nothing in the UI suggests
-otherwise. Iteration 2 adds *memory* and an *authored variation engine*; these are kept
-deliberately distinct from learning:
+| Part | How it works | Kind |
+| --- | --- | --- |
+| Needs, moods, care, choosing what to do | Hand-written rules, utility scores, seeded softmax | Authored |
+| Walking, 3D animation, expressions | Waypoint paths and procedural animation | Authored |
+| Starter songs and doodles | Seeded generators | Authored |
+| Teaching memory | Stored lessons and labelled feedback; storing or retrieving changes no weight | Memory |
+| Variation rules (echo, sequence, wobble, tilt) | `AuthoredCreativeEngine` | Authored |
+| Features, smoothing, renderers, synthesiser | Fixed and shared by every pet | Shared fixed |
+| Next note, duration, velocity, tempo | MusicPolicyNet weights, gradient descent | **Learned** |
+| Stroke detail, pressure, width, colour, steadiness | StrokePolicyNet weights, gradient descent | **Learned** |
+| Style-conditioned generation | Style inputs of both networks, trained on nudge-weighted style copies | **Learned** |
+| How much the networks steer (α) | Schedule over steps and lesson practice | Authored |
 
-* **Teaching memory is not learning.** A lesson is stored as an example with its full
-  representation and originating session. Storing or retrieving it changes no parameter.
-  There are no trainable parameters yet (`ENGINE_INFO.trainableParameters === 0`); they
-  arrive with Sleep Practice in Iteration 3, which will read this replay buffer.
-* **The pet's attempt is authored variation.** `AuthoredCreativeEngine` keeps recognisable
-  parts of the lesson and varies the rest with seeded rules.
-  * For music it echoes the motif a scale step away, answers the second half with a
-    mirrored contour, moves the tune up or down the scale, or adds ornaments.
-  * For drawing it adds its own hand (wobble), a composition shift, its own colours some of
-    the time, and a tiny heart signature.
-  * Same lesson, seed, style and temperament always give the same attempt. Every output
-    carries a `generator` tag (`imitate-phrase-v1`, `imitate-draw-v1`).
-* **Feedback is labelled by meaning.** `love` is a *preference* signal (`reward: +1.0` on a
-  creation). It is not a correct next-note or next-stroke label. `nudge` is a *direction*
-  signal; `variation` and `perform` are *requests*. The labels are stored with each signal
-  so a future trainer cannot mistake one for another.
-* **Style guidance** (energy for calmer/livelier, order for neater/wilder, each −1 to 1)
-  moves one step (0.34) per nudge. It steers the authored engine together with
-  temperament: playful versus calm leans energy, chaotic versus neat leans order. Tests
-  check the direction of each effect, averaged over many seeds:
-  * calmer music is slower, sparser and softer; livelier music is faster and busier;
-  * wilder melodies leap further;
-  * wilder drawings wobble about 2× more than neater ones;
-  * livelier lines are bolder than calmer ones.
-
-* **Needs** are satisfaction meters: 100 is fully satisfied, 0 needs attention. They decay
-  at per-second base rates scaled by temperament and activity. Mood drifts toward a
-  weighted average of the other needs.
-* **Autonomy:** when idle the pet scores every station from need urgency plus temperament
-  affinity. Critically low hunger, energy or hygiene win outright. Otherwise a softmax with
-  a temperament-dependent temperature picks the station using the pet's seeded PRNG.
-  Satisfied needs never send it to eat, bathe or nap. Self-chosen care is 55% as
-  effective as care you ask for, so a neglected pet stays okay but you still matter.
-* **Temperament** (Playful, Calm, Curious, Dramatic, Stubborn, Neat, Chaotic, each 0-1)
-  only weights these hand-written rules and the flavour text. Stubborn pets may refuse an
-  optional request, but never a real need and never twice in a row.
-* **Starter songs and drawings** are deterministic functions of (seed, temperament,
-  colours). The easel paints them progressively and the keyboard plays them note by note,
-  with key presses, arm motion, floating notes and synthesised sound all driven by the
-  same note events.
+Feedback stays labelled by meaning. `love` is a preference: a reward-weighted example,
+never a corrected label. `nudge` is a direction: it moves the style input and weights the
+style copies. Temperament only weights the authored rules, and enters the networks as a
+constant input per pet.
 
 ### Persistence
 
-The pet is saved as a versioned record (`schema: "petstudio.pet"`, `version: 1`) under
-`petstudio.pet.v1`, with the previous valid save kept as a last-known-good backup
-(`.bak`). Loading falls back to the backup if the main record is damaged. A save written
-by a newer schema is copied aside and never overwritten. Every field is sanitised on load:
-numbers clamped, enums checked, colours validated, names stripped and truncated.
-
-Time away is bounded and gentle: at most 8 hours are simulated, needs drift at 35% speed
-and never drop below 25 because of absence, and a sleeping pet keeps resting. An
-unfinished drawing or song resumes if you return within 30 minutes. Otherwise it stays
-unfinished: the app never fabricates work done while closed.
-
-Iteration 2 adds three more records, all sanitised on load:
-
 | Key | Schema | Contents and retention |
 | --- | --- | --- |
-| `petstudio.teach.v1` (+ `.bak`) | `petstudio.teach` v1 | Teaching memory for one pet: at most 12 lessons per kind (oldest dropped first), 200 signals and about 600 KB. If the memory belongs to a different pet (for example after a reset) it is moved to `petstudio.teach.orphan` rather than reused. |
-| `petstudio.gallery.v1` (+ `.bak`) | `petstudio.gallery` v1 | At most 40 items and about 1.2 MB. Non-favourite starter pieces are capped at 10. When room is needed the oldest non-favourite starter piece goes first, then attempts, then lessons, then favourites. The pinned drawing and the item just added are never evicted. On a quota error the backup copy is dropped, then the oldest items, and the save is retried. |
-| `petstudio.workshop.v1` | `petstudio.workshop` v1 | The unfinished draft in the Teaching Workshop (phrase, drawing, brush). |
+| `petstudio.pet.v1` (+ `.bak`) | `petstudio.pet` v1 | The pet: identity, appearance, needs, activity, counters. |
+| `petstudio.teach.v1` (+ `.bak`) | `petstudio.teach` v1 | Teaching memory: at most 12 lessons per kind, 200 signals, ~600 KB. |
+| `petstudio.gallery.v1` (+ `.bak`) | `petstudio.gallery` v1 | At most 40 items, ~1.2 MB. Items now carry an optional `model` tag. |
+| `petstudio.workshop.v1` | `petstudio.workshop` v1 | The unfinished workshop draft. |
+| `petstudio.model.v1` (+ `.bak`) | `petstudio.model` v1 | The learned networks: at most 5 checkpoints (~118 KiB with two), progress, history, settings. |
 
-A future-version record is copied to `*.future` and never overwritten. A torn or corrupt
-main record falls back to the last good backup, and a corrupt main record never overwrites
-a good backup. An attempt is saved to the gallery only when the pet finishes it, or when
-you press Love It. A pending plan in teaching memory lets a performance interrupted by a
-reload resume the same attempt.
-
-### Responsive framing
-
-The canvas fills the screen and the UI floats over it. Each layout pass measures the area
-the UI leaves free; the camera then applies a matching projection offset and
-binary-searches the distance that fits the whole diorama, or the focused station, inside
-that area. Portrait screens get a steeper camera and a wider field of view. The overview
-always frames the entire room, from a 390x844 phone up to desktop. The customizer and the
-Teaching Workshop reframe the pet beside their drawer (desktop) or above their sheet (phone
-and tablet). Sheets are measured by their layout box, so their slide-in animation never
-skews the framing. The Creation Feedback Bar is treated as UI too: while it shows, the
-studio is framed above it.
-
-### Representations (shared by teaching, the engine, storage and rendering)
-
-* **Phrase:** `{ tempo, beats, notes: [{ beat, midi, dur, vel }], hits: [{ beat, midi, dur, vel }] }`.
-  * `notes` are pitched events on the studio keyboard (MIDI 60 to 81).
-  * `hits` are percussion events with General MIDI drum numbers (36 kick, 39 clap,
-    42 hi-hat, 76 wood block), kept separate so a drum number is never mistaken for a pitch.
-  * Beats are relative to the phrase start; durations are in beats; velocity is 0 to 1.
-* **Drawing:** `{ paper, strokes: [{ color, width, points: [[x, y, p, dt]], t0, dur }] }`.
-  * `x, y` lie in [0, 1] (y down) on a square canvas; `p` is pen pressure; `dt` is seconds
-    since the previous point.
-  * Each stroke is one pen-down to pen-up span, which encodes the raw `pen_state`.
-  * `t0` keeps the pauses between strokes.
-  * Starter strokes with plain `[x, y]` points remain valid.
-
-## Hooks for later iterations
-
-* `window.__PET_STUDIO__.features.register(id, { open(app) {...} })` plugs a real
-  implementation into a hook. Teach and Gallery now use it; `practice` and `inspector`
-  (Iteration 3) are still placeholders. The dock and the More sheet update automatically.
-* The creative engine is a replaceable interface: `engine.compose(kind, source, { seed, style, traits, colors })`.
-  A learned controller can replace `AuthoredCreativeEngine` without touching the workshop,
-  gallery, flow or storage. Outputs carry `generator` tags so learned behaviour stays
-  distinguishable from authored behaviour.
-* Teaching memory is the training data source. It holds lessons (supervised examples with
-  their sessions and linked attempts) and labelled preference or direction signals.
+Every record is sanitised on load. A torn main record falls back to its backup, a future
+version is copied to `*.future` and never overwritten, and data of another pet is moved to
+`*.orphan`. Time away is bounded and gentle (care only). No training happens while the app
+is closed, and the app never claims otherwise.
 
 ## Inspection API
 
-`window.__PET_STUDIO__` exposes `state` (snapshot), `record` (persisted JSON), `actions.*`,
-`camera.setView(id)` and `camera.settled`, `customize.open/close/apply/setTraits`,
-`setNeeds`, `setTimeScale`, `layout()`, `renderInfo()`, `audio.setMuted`, `features`,
-`save()`, `reset()` and `ready`. Iteration 2 adds three groups:
+`window.__PET_STUDIO__` exposes:
 
-* `teach`: open the workshop, `setTab`, `loadTemplate`, `stampShape`, `playNote`, `hit`,
-  `record`, `preview`, `undo`, `clear`, `setPhrase`, `setDrawing`, `phrase`, `drawing`,
-  `teach()` and `teachData(kind, data)`. Teaching-memory views: `memory`, `lessons`,
-  `prefs`, `signals`. `engine` gives the engine info and `learning` states that it is none.
-* `gallery`: `items`, `get`, `counts`, `wall`, `wallArt`, `favorite`, `remove`, `perform`,
-  `hang`, `unhang`, `compare`, `filter`, `limits`, `bytes`.
-* `creation`: the feedback `bar` state, the current `subject`, `love()`, `variation()`,
-  `nudge(id)`, `dismiss()`.
+* `state`, `record`, `actions.*`, `camera`, `customize`, `setNeeds`, `setTimeScale`;
+* `layout()`, `renderInfo()`, `features`, `save()` and `reset()`;
+* `teach`, `gallery` and `creation`, as in Iteration 2. `teach.engine` now reports the
+  hybrid engine.
 
-`layout()` reports the viewport, horizontal and vertical overflow, the free "safe" rect,
-overlay rects (including the feedback bar and the sheets), clipped controls, labels that
-spill out of their buttons, small touch targets, and whether the camera has settled.
-Clipped means cut off by any ancestor that cannot scroll the control into view, not only
-off-screen. It also reports whether the pet's silhouette sits inside the safe rect without
-touching the UI or the feedback bar. The silhouette is computed from outline points
-because 3D box corners are inflated by perspective in close-ups; the box is still reported
-for reference.
+Iteration 3 (`iteration: 3`) adds three groups:
+
+* `practice`: `open`, `close`, `state` (status, steps, epoch and batch, losses, ‖Δθ‖,
+  confidence, dream, result), `start`, `pause`, `step(n)`, `cancel`, `finish`,
+  `performLearned`, `comparison`, `setSpeed`, `setSessionSteps`.
+* `inspector`: `open`, `close`, `summary`, `checkpoints`, `run(n)`, `save`, `rollback(id)`,
+  `reset`, `measure`.
+* `modelNet`: `architecture`, `stats`, `parameters`, `settings`, `history`, `lastSession`,
+  `steps(kind)`, `alpha(kind, lessonId)`, `validation()`, `data()`. Also:
+  * `generate(lessonId)`: the network's own version of a lesson;
+  * `attempt(lessonId)`: the pet's real blended attempt;
+  * `save()`.
+
+`layout()` additionally reports:
+
+* `dock`: rect, hidden, fit mode, lane, side panels, `overlapsPanel`, `insideLane`;
+* `slicedNotes`;
+* overlays for the practice and inspector sheets.
 
 ## Testing and verification
 
-* `npm test` runs 114 `node:test` cases (45 from Iteration 1, 69 new).
-  * `tests/core.test.mjs`, `tests/repertoire.test.mjs`: the Iteration 1 simulation,
-    persistence and starter generators. All still pass unchanged.
-  * `tests/teaching-core.test.mjs`: stroke normalisation (pixels to [0, 1], clamping),
-    resampling (even arc-length spacing, endpoints kept, pressure and time interpolated,
-    dots, point budgets), the stroke recorder (raw `pen_state` stream, undo and clear,
-    stamps), phrase quantization, free-time and metronome-pass recording (chords, gap cap,
-    count-in, overdub, full phrases, held durations), sanitisation of hostile phrases and
-    drawings, templates and similarity metrics.
-  * `tests/creative-engine.test.mjs`: attempts are deterministic, valid, recognisably
-    inspired by their lesson, and move in the guided style direction (averaged over seeds).
-  * `tests/stores.test.mjs`: teaching memory and gallery round trips, backup fallback,
-    future-version preservation, hostile-record sanitisation, retention (40 items, starter
-    cap, protected favourites and pin, byte budget), quota recovery, and the move-aside
-    for another pet's memory.
-  * `tests/teaching-flow.test.mjs`: the teach-to-attempt flow end to end on the real
-    simulation.
-    * Covered: listen, walk, perform, save and link for music and drawing; Love It
-      (favourite, `+1.0` signal, bond and mood); Try Variation; nudges.
-    * Also: napping pets declining with nothing stored; interruptions discarding
-      unfinished work; replays without duplicates; starter items; resuming after a
-      reload; feedback-bar timing; two temperaments answering one lesson differently.
-* `npm run verify` drives the production build in headless Microsoft Edge 156 (SwiftShader
-  WebGL, so frame rates are low) with real CDP touch and mouse input. Devices: 390x844@3x
-  touch, 768x1024@2x touch, 1440x900@1x mouse. The flow per device:
-  * opens the workshop (dock on desktop, More sheet on phone and tablet);
-  * taps keys and pads, deletes a timeline note and undoes it, plays a key with Enter;
-  * previews, loads a starter tune, toggles all notes, starts and stops recording;
-  * draws a stroke, stamps, undoes, replays and traces;
-  * teaches music, then checks the lesson, the performance and the bar, presses Love It
-    and Calmer;
-  * teaches a drawing and watches the easel;
-  * in the gallery: Listen, both compare views with playback and replay, favourite and
-    filter, Hang on Wall;
-  * reloads to check persistence;
-  * lets the pet nap, confirms a lesson is declined with an explanation, and closes the
-    workshop with Escape.
-
-  It also covers the customizer as a regression check on the shared framing code. At
-  every step it records `layout()`.
-
-  **Latest results:** 97 of 97 checks passed on each of the three devices. That means zero
-  console errors, zero horizontal overflow, zero clipped controls and zero spilling labels,
-  with the pet inside the free area and clear of the UI, the sheets and the feedback bar
-  in every studio state checked.
-* Not yet verified on physical devices, in Safari/WebKit, or with audio output: the
-  automated runs are muted. Software-rendered frame rates say nothing about real GPU
-  performance.
+* **`npm test` runs 143 `node:test` cases:** the 114 from Iterations 1 and 2, unchanged
+  and passing, plus 29 in `tests/neural-engine.test.mjs`.
+* **Architecture:** parameter counts. The untrained baseline is identical for every pet
+  and predicts the starter prior. Forward passes are deterministic.
+* **Gradients:** central finite differences match the analytic gradients of both networks.
+  Gradients stay finite, training loss falls by more than 80%, and momentum SGD works too.
+* **Validation split:** hold-out positions are chosen before augmentation.
+* **Replay:** lesson A survives learning lesson B with replay and is forgotten without it.
+* **Rollback:**
+  * an injected NaN rolls back to the exact pre-sleep weights;
+  * a corrupted update is rejected by validation;
+  * corruption after a good check returns to the best weights;
+  * a divergent learning rate never commits worse weights.
+* **Checkpoints:** five at most; rollback and reset work; save and load is bit-exact with
+  the Adam state, and responses are identical after reload; a torn record falls back to
+  the backup; NaN, malformed and absurd checkpoints are dropped; damaged `latest`
+  checkpoints are rejected; future, other-pet and incompatible records are kept aside;
+  base64 is exact.
+* **Learning changes the output:** music and drawing attempts get closer to the taught
+  lesson after practice, with the same seeds and the untrained-at-same-α control. Calmer,
+  livelier and wilder are learned. Two pets from one baseline diverge on a new lesson and
+  train independently. The blend schedule is checked too.
+* **Sleep Practice scheduling:** no data, then nap, pacing, held nap, pause, Step +1,
+  completion with before/after, and Wake & Finish. A re-taught identical tune is
+  recognised, and a session closed before any step leaves no "interrupted" mark. Also covered: the 4 ms frame budget,
+  pausing when the pet wakes, Cancel & Rollback, and the creation flow tagging retries
+  `neural-v1` after practice.
+* **`npm run verify`** drives the production build in headless Microsoft Edge (SwiftShader
+  WebGL) with real CDP touch and mouse input on three devices: 390x844 @3x touch, 768x1024
+  @2x touch and 1440x900 @1x mouse.
+  * It covers every Iteration 2 flow, plus the new Iteration 3 checks:
+    * the dock is never under a side drawer and hides under the Gallery, More and
+      Inspector sheets;
+    * no note is sliced and no shape chip is cut;
+    * the camera returns to the overview when the pet leaves a station.
+  * Sleep Practice is driven by real taps: open, nap, live counters and chart, Pause,
+    Step +1, Cancel & Rollback, Practise Again, commit, before/after, and Perform New
+    Learned Version (`neural-v1` in the bar and the gallery).
+  * Learned weights reload exactly.
+  * In the Inspector it checks the content, then Run 10 steps, Save, Measure, Rollback,
+    confirmed Reset and Escape.
+  * `layout()` is checked at every step.
+  * **Latest results:** all checks passed on every device: phone 198 of 198, tablet 198
+    of 198, desktop 192 of 192. That means:
+    * zero console errors, zero horizontal overflow and zero clipped controls;
+    * zero spilling labels and zero sliced notes;
+    * the dock never under a drawer and hidden under every centred sheet;
+    * the pet inside the free area in every studio state checked.
+* **Not yet verified:** physical devices, Safari/WebKit, audio output (the automated runs
+  are muted), and real GPU or thermal behaviour.
 
 ## Known limitations
 
-* No machine learning yet: the pet's attempts come from the authored variation engine, so
-  they do not improve with more lessons. Teaching memory, labelled signals and the engine
-  interface are in place for the Iteration 3 trainer.
-* Drawing similarity and phrase similarity are coarse descriptive measures, shown only in
-  the comparison view and never as a score or as evidence of learning.
-* Free-time capture caps gaps at one beat. Longer rests need a Record pass.
-* No PWA manifest or service worker yet. Offline use works only once the page is cached
-  by the browser.
-* Station walking uses simple waypoints rather than navmesh pathfinding. Paths are tuned
-  for this layout.
-* Audio starts after the first tap or keypress (browser autoplay rules) and is synthesised
-  rather than sampled. Note timing in the workshop is scheduled ahead with WebAudio; the 3D
-  performance plays notes on frame boundaries.
+* **What the networks can learn.** They are deliberately small and learn narrow mappings:
+  your tunes' notes and rhythms, your strokes' detail, pressure, width and colour, and
+  your style nudges. They do not compose freely. Percussion and the drawing's composition
+  (placement, flourishes, signature) stay authored.
+* **Held-out sets are tiny for short tunes.** One tune holds out two or three notes, and
+  memorising a one-off melody makes those notes harder to guess. The gate therefore
+  carries a noise allowance and can still roll a tune back (seen for one irregular tune).
+  Gains in held-out loss are modest for music. The reproduction gains come from the
+  practised notes.
+* **Blend weight.** α is a schedule over steps and practice, not a learned confidence. On
+  lessons it never practised, the pet uses at most a quarter of the learned weight.
+* **Foreground only.** Practice runs while the page is open and the pet naps. A hidden tab
+  pauses it (requestAnimationFrame stops), and a reload keeps the last 60-step checkpoint.
+* **Frame budget.** A validation pass every 20 steps can take a few milliseconds more than
+  a normal step on large lesson sets.
+* **Still missing:** nearby exchange, file export and import of pets, and native
+  background training. No PWA manifest or service worker yet.
+* **Descriptive measures.** Similarity and closeness are descriptive measures, never
+  scores shown to the player.

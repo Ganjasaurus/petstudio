@@ -1,18 +1,21 @@
 /**
- * main.js: composition root for Pet Studio (Iteration 2).
+ * main.js: composition root for Pet Studio (Iteration 3).
  *
  * Wires the deterministic pet simulation (pet-state.js) to the 3D studio
  * (studio-scene.js + pet-model.js), audio (audio.js) and the DOM UI
- * (hud.js, customizer.js, teaching-workshop.js, gallery.js); connects the
- * teaching loop (creation-flow.js) to the teaching memory and the creation
- * gallery; persists everything to localStorage; and exposes
+ * (hud.js, customizer.js, teaching-workshop.js, gallery.js,
+ * sleep-practice.js, learning-inspector.js); connects the teaching loop
+ * (creation-flow.js) to the teaching memory, the creation gallery and the
+ * hybrid creative engine; runs Sleep Practice (practice-runner.js) inside
+ * the frame loop; persists everything to localStorage; and exposes
  * window.__PET_STUDIO__ for automated multi-device inspection.
  *
- * Learning boundary: nothing in Iteration 2 learns. Care, autonomy, the
- * starter repertoire and the pet's attempts at your lessons are authored,
- * deterministic rules (the attempts come from a seeded variation engine fed
- * by the teaching memory). Sleep Practice and the Inspector remain
- * placeholders for the genuine on-device learning of Iteration 3.
+ * Learning boundary: the two small networks in neural-engine.js are the
+ * only parts that learn (gradient descent during Sleep Practice). Care,
+ * autonomy, walking, animation, the starter repertoire and the authored
+ * variation rules are hand-written; the teaching memory stores examples.
+ * Attempts are authored until a network has trained, then blend in its
+ * output (generator 'neural-v1').
  */
 import * as THREE from 'three';
 import { PetState, loadPet, savePet, clearSavedPet, randomAppearance, randomTraits, hashSeed, SCHEMA_VERSION } from './pet-state.js';
@@ -30,6 +33,11 @@ import { loadTeachingMemory, saveTeachingMemory, clearTeachingMemory, TEACH_VERS
 import { loadGallery, saveGallery, clearGallery, GALLERY_LIMITS, GALLERY_VERSION } from './gallery-store.js';
 import { installTeachingWorkshop } from './teaching-workshop.js';
 import { installGallery } from './gallery.js';
+import { loadModel, saveModel, clearModel, trainingDataFrom, MODEL_VERSION, MODEL_KINDS, NEURAL_GENERATOR } from './neural-engine.js';
+import { HybridCreativeEngine } from './hybrid-engine.js';
+import { PracticeRunner } from './practice-runner.js';
+import { installSleepPractice } from './sleep-practice.js';
+import { installLearningInspector } from './learning-inspector.js';
 
 /* global __PETSTUDIO_BUILD__ */
 const BUILD = typeof __PETSTUDIO_BUILD__ !== 'undefined' ? __PETSTUDIO_BUILD__ : { version: 'dev', mode: 'unbundled', builtAt: null };
@@ -40,13 +48,14 @@ const WORKSHOP_DRAFT_KEY = 'petstudio.workshop.v1';
 
 const REACTION_ICON = {
   feed: 'i-feed', wash: 'i-wash', sleep: 'i-rest', wake: 'i-wake', pet: 'i-bond', praise: 'i-praise',
-  music: 'i-music', draw: 'i-draw', listen: 'i-listen', complete: 'i-praise', lesson: 'i-teach', love: 'i-bond',
+  music: 'i-music', draw: 'i-draw', listen: 'i-listen', complete: 'i-praise', lesson: 'i-teach', love: 'i-bond', practice: 'i-practice',
 };
 const REACTION_SOUND = {
   feed: 'feed', wash: 'wash', sleep: 'sleep', wake: 'wake', pet: 'pet', praise: 'praise',
-  music: 'go', draw: 'go', listen: 'go', complete: 'complete', lesson: 'lesson', love: 'love',
+  music: 'go', draw: 'go', listen: 'go', complete: 'complete', lesson: 'lesson', love: 'love', practice: 'sleep',
 };
 const STATION_VIEW = { music: 'music', drawing: 'easel' };
+const VIEW_STATION = { music: 'music', easel: 'easel' };
 const LOW_NEED_HINT = {
   hunger: ['looks a little peckish.', 'i-hunger'],
   energy: ['is getting sleepy.', 'i-energy'],
@@ -64,9 +73,9 @@ const STATION_TIP = {
 };
 
 /**
- * Feature hooks. Teach and Gallery are replaced by their real implementations
- * at boot (features.register in teaching-workshop.js and gallery.js); the
- * Iteration 3 hooks stay placeholders.
+ * Feature hooks: each is replaced by its real implementation at boot
+ * (features.register in teaching-workshop.js, gallery.js, sleep-practice.js
+ * and learning-inspector.js).
  */
 const FEATURE_PLACEHOLDERS = [
   {
@@ -79,11 +88,11 @@ const FEATURE_PLACEHOLDERS = [
   },
   {
     id: 'practice', label: 'Sleep Practice', short: 'Practice', icon: 'practice', iteration: 3,
-    description: 'While your pet naps, a small on-device model genuinely trains on what you taught it, with honest progress you can pause or cancel.',
+    description: 'While your pet naps, its two small on-device networks genuinely train on what you taught it, with honest progress you can pause or cancel.',
   },
   {
-    id: 'inspector', label: 'Inspector', short: 'Inspector', icon: 'inspector', iteration: 3,
-    description: 'Developer diagnostics: learned parameters, losses, checkpoints, and which behaviour is starter content versus learned.',
+    id: 'inspector', label: 'Learning Inspector', short: 'Inspector', icon: 'inspector', iteration: 3,
+    description: 'Developer diagnostics: learned parameters, losses, checkpoints, and which behaviour is authored versus learned.',
   },
 ];
 
@@ -155,8 +164,9 @@ class App {
     this.features = new FeatureRegistry(FEATURE_PLACEHOLDERS);
     this.session = { drawing: null, music: null, listen: null, lesson: null, keyTargets: [null, null] };
     this.flowCam = null; // camera follows a teaching flow until the player picks a view
-    this.sheet = null; // which of the workshop / gallery sheets is open
+    this.sheet = null; // which of the workshop / gallery / inspector sheets is open
     this.storesDirty = false;
+    this.modelDirty = false;
     this.dirty = false;
     this.lastSave = 0;
     this.lastHud = 0;
@@ -194,8 +204,16 @@ class App {
     const gal = loadGallery(this.storage);
     this.memory = mem.memory;
     this.gallery = gal.gallery;
-    this.storeStatus = { memory: mem.status, gallery: gal.status };
-    this.flow = new CreationFlow({ pet: this.pet, memory: this.memory, gallery: this.gallery });
+    // The pet's own trainable networks: they learn only from its teaching memory and gallery.
+    const mdl = loadModel(this.storage, { petId: this.pet.id });
+    this.neural = mdl.engine;
+    this.neural.setDataSource(() => trainingDataFrom(this.memory, this.gallery, this.pet.traits));
+    this.neural.on((e) => this.onModelEvent(e));
+    this.creative = new HybridCreativeEngine({ neural: this.neural });
+    this.storeStatus = { memory: mem.status, gallery: gal.status, model: mdl.status };
+    this.flow = new CreationFlow({ pet: this.pet, memory: this.memory, gallery: this.gallery, engine: this.creative });
+    this.practice = new PracticeRunner({ engine: this.neural, creative: this.creative, pet: this.pet, memory: this.memory, now: () => performance.now() });
+    this.practice.on((e) => this.onPracticeEvent(e));
     this.flow.on((e) => this.onFlowEvent(e));
     this.memory.onChange(() => this.scheduleStoreSave());
     this.gallery.onChange((what) => {
@@ -234,6 +252,9 @@ class App {
     }
     this.workshop = installTeachingWorkshop(this, { reducedMotion });
     this.galleryView = installGallery(this, { reducedMotion });
+    this.practiceView = installSleepPractice(this, { reducedMotion });
+    this.inspector = installLearningInspector(this);
+    this.watchModals();
     this.restoreCreativeState();
     this.refreshWallArt();
 
@@ -250,7 +271,17 @@ class App {
       this.hud.toast('A save from a newer version was kept safe. Starting a fresh pet here.', { tone: 'warn', duration: 5000 });
     }
     if (Object.values(this.storeStatus).includes('restored-backup')) {
-      this.hud.toast('Some lessons or creations were damaged, so their last good copy was restored.', { tone: 'warn', icon: 'i-gallery', duration: 5000 });
+      this.hud.toast('Some lessons, creations or learned skills were damaged, so their last good copy was restored.', { tone: 'warn', icon: 'i-gallery', duration: 5000 });
+    }
+    if (mdl.status === 'incompatible') {
+      this.hud.toast('Learned skills from an older model version were kept aside; practice starts fresh.', { tone: 'warn', icon: 'i-practice', duration: 5000 });
+    }
+    const lastMark = [...this.neural.history].reverse().find((h) => h.mark)?.mark;
+    if (lastMark === 'start' || lastMark === 'partial') {
+      // Truthful about interruptions: nothing trains while the app is closed.
+      this.neural.mark('cancel', null);
+      this.hud.toast(`Practice stopped when the app closed. ${this.pet.name} kept the progress checkpointed before that.`, { icon: 'i-practice', duration: 5200 });
+      this.scheduleModelSave(0);
     }
     if (this.memoryOnly) this.hud.toast('This browser blocks storage, so progress will not be saved.', { tone: 'warn', duration: 5000 });
     if (loaded.away) this.hud.toast(loaded.away.text, { icon: 'i-wake', duration: 5200 });
@@ -308,11 +339,18 @@ class App {
         // A teaching flow shows the performance: switch to the station once the pet starts.
         if (this.flowCam && e.plan?.ref === this.flowCam.ref && STATION_VIEW[e.plan.kind] && (e.to === 'playing_music' || e.to === 'drawing')) {
           this.setView(STATION_VIEW[e.plan.kind], { auto: true });
+          this.flowCam.view = STATION_VIEW[e.plan.kind];
+        } else if (this.flowCam?.performed && e.to === 'walking' && VIEW_STATION[this.flowCam.view] !== e.station) {
+          // The piece is over and the pet walks away from the station: stop aiming at it.
+          this.returnFromStation();
         }
         this.hudDirty = true;
         this.markDirty();
         break;
-      case 'activity:end': this.onActivityEnd(e); break;
+      case 'activity:end':
+        if (this.flowCam && e.plan?.ref === this.flowCam.ref && (e.activity === 'playing_music' || e.activity === 'drawing')) this.flowCam.performed = true;
+        this.onActivityEnd(e);
+        break;
       case 'need:low': this.onNeedLow(e); break;
       default: this.markDirty(); break;
     }
@@ -425,6 +463,18 @@ class App {
     this.hud.setView(id);
   }
 
+  /**
+   * After a performance the camera was aimed at a station automatically; once
+   * the pet walks away it returns to the overview, which frames the whole
+   * room (and so the pet) inside the free area. A view the player picked is
+   * never overridden (setView without `auto` clears flowCam).
+   */
+  returnFromStation() {
+    const fc = this.flowCam;
+    this.flowCam = null;
+    if (fc?.view && this.studio?.view === fc.view) this.setView('overview', { auto: true });
+  }
+
   toggleMute() {
     this.audio.unlock();
     const muted = this.audio.toggleMute();
@@ -433,11 +483,133 @@ class App {
   }
 
   openFeature(id) {
-    if (this.customizer?.isOpen || this.workshop?.isOpen || this.galleryView?.isOpen) return;
+    if (this.customizer?.isOpen || this.workshop?.isOpen || this.galleryView?.isOpen || this.inspector?.isOpen) return;
     this.audio.unlock();
     const f = this.features.get(id);
-    if (f?.available) f.open(this.api);
-    else this.hud.openNext(id);
+    if (!f?.available) {
+      this.hud.openNext(id);
+      return;
+    }
+    // Sleep Practice is a non-modal drawer: another drawer takes its place (practice keeps running).
+    if (id !== 'practice' && id !== 'inspector' && this.practiceView?.isOpen) this.practiceView.close('switch');
+    f.open(this.api);
+  }
+
+  // ----- Sleep Practice and the learning engine -------------------------------------
+  onPracticeOpen() {
+    this.practiceCam = { prev: this.studio?.view ?? 'overview' };
+    document.body.classList.add('practice-open');
+    this.practice.holdAfterSession = true; // results show while it keeps dozing
+    this.practice.begin();
+    this.setView(this.pet.isAsleep ? 'sleep' : 'pet', { auto: true });
+    this.hudDirty = true;
+    this.layoutSoon();
+  }
+
+  onPracticeClose(reason) {
+    document.body.classList.remove('practice-open');
+    this.practice.holdAfterSession = false;
+    // Practice keeps running in its sleep if the drawer closes mid-session; once it is over the nap may end naturally.
+    if (!this.practice.active) this.pet.releaseSleepHold();
+    const cam = this.practiceCam;
+    this.practiceCam = null;
+    // The pet went to the Sleep Nook, so the view from before practice no longer shows it: back to the overview.
+    if (cam && reason !== 'perform' && reason !== 'switch' && (this.studio?.view === 'sleep' || this.studio?.view === 'pet')) this.setView('overview');
+    this.hudDirty = true;
+    this.layoutSoon();
+  }
+
+  onPracticeEvent(e) {
+    this.hudDirty = true;
+    if (e.type === 'status' && e.status === 'practicing' && this.practiceCam && this.practiceView?.isOpen) this.setView('sleep', { auto: true });
+    if (e.type === 'checkpoint') this.scheduleModelSave(0);
+    if (e.type === 'session-end') {
+      this.scheduleModelSave(0);
+      const r = e.result;
+      if (!this.practiceView?.isOpen && r) {
+        const text = r.decision === 'committed'
+          ? `${this.pet.name} finished practising: ${r.steps} steps, validation ${r.preVal?.toFixed(2) ?? '–'} → ${r.finalVal?.toFixed(2) ?? '–'}.`
+          : `${this.pet.name}'s practice was rolled back (${r.reason}).`;
+        this.hud.toast(text, { icon: 'i-practice', duration: 4200 });
+      }
+    }
+  }
+
+  /** Wake & Finish: commits (or rolls back) the session, wakes the pet and closes the drawer. */
+  finishPractice() {
+    const res = this.practice.finish({ wake: true });
+    this.practiceView?.close('finish');
+    const r = res.result;
+    if (r?.decision === 'committed') this.hud.toast(`Practice kept: validation ${r.preVal?.toFixed(2) ?? '–'} → ${r.finalVal?.toFixed(2) ?? '–'} after ${r.steps} steps.`, { icon: 'i-practice', duration: 4200 });
+    else if (r?.decision === 'rolled-back') this.hud.toast('That practice did not help, so the previous version was kept.', { icon: 'i-practice', tone: 'warn', duration: 4200 });
+    this.scheduleModelSave(0);
+    this.hudDirty = true;
+    return res;
+  }
+
+  /** "Have Pet Perform New Learned Version": wake, then perform the after-practice attempt. */
+  performLearned() {
+    const c = this.practice.result?.comparison;
+    if (!c) return { ok: false, reason: 'no-comparison' };
+    this.practice.finish({ wake: true });
+    this.practiceView?.close('perform');
+    const res = this.flow.performComposed({
+      kind: c.kind, data: c.after.data, lessonId: c.lessonId, seed: c.seed, style: this.memory.prefs,
+      generator: c.after.generator, model: c.after.data.model ?? null,
+    });
+    if (res.ok) {
+      this.flowCam = { ref: res.plan.ref };
+      this.saveStores();
+    } else if (res.message) {
+      this.hud.toast(res.message, { tone: 'warn' });
+    }
+    this.hudDirty = true;
+    return res;
+  }
+
+  onModelEvent(e) {
+    if (['commit', 'rollback', 'reset', 'checkpoint', 'session'].includes(e.type)) this.scheduleModelSave();
+    this.hudDirty = true;
+  }
+
+  /** The Inspector changed the model (steps, rollback, reset, settings). */
+  onModelChanged() {
+    this.scheduleModelSave(0);
+    this.hudDirty = true;
+  }
+
+  scheduleModelSave(delay = 400) {
+    this.modelDirty = true;
+    clearTimeout(this.modelTimer);
+    this.modelTimer = setTimeout(() => this.saveModelNow(), delay);
+  }
+
+  saveModelNow() {
+    clearTimeout(this.modelTimer);
+    this.modelDirty = false;
+    const res = saveModel(this.neural, this.storage, Date.now());
+    if (!res.ok && !this.modelWarned && !this.memoryOnly) {
+      this.modelWarned = true;
+      this.hud?.toast('Could not save learned skills right now. They are fine in this session.', { tone: 'warn', duration: 4500 });
+    }
+    return res;
+  }
+
+  /** Centred modal sheets (Gallery, More, Inspector) cover the lower screen: the dock steps aside. */
+  watchModals() {
+    const ids = ['gallery', 'next-sheet', 'inspector'];
+    const update = () => {
+      const covered = ids.some((id) => document.getElementById(id)?.open);
+      document.body.classList.toggle('modal-covered', covered);
+    };
+    if ('MutationObserver' in window) {
+      const mo = new MutationObserver(update);
+      for (const id of ids) {
+        const d = document.getElementById(id);
+        if (d) mo.observe(d, { attributes: true, attributeFilter: ['open'] });
+      }
+    }
+    update();
   }
 
   // ----- teaching loop (Teaching Workshop, Gallery, feedback bar) ---------------------
@@ -461,7 +633,7 @@ class App {
   performItem(id) {
     const res = this.flow.perform(id);
     if (res.ok) {
-      this.flowCam = { ref: res.plan.ref };
+      this.flowCam = { ref: res.plan.ref, view: STATION_VIEW[res.plan.kind] };
       this.galleryView.close('perform');
       this.setView(STATION_VIEW[res.plan.kind], { auto: true });
     } else if (res.reason === 'missing') {
@@ -514,14 +686,18 @@ class App {
     else if (NUDGES[kind]) res = this.flow.nudge(kind);
     else if (kind === 'dismiss') res = { ok: this.flow.dismiss() };
     else return { ok: false, reason: 'unknown' };
-    if (res.ok && (kind === 'variation' || NUDGES[kind])) this.flowCam = { ref: res.plan.ref };
+    if (res.ok && (kind === 'variation' || NUDGES[kind])) {
+      // A retry often starts right away at the same station: keep the camera's claim on it.
+      const view = STATION_VIEW[res.plan.kind];
+      this.flowCam = { ref: res.plan.ref, view: this.studio?.view === view ? view : null };
+    }
     if (!res.ok && res.message && res.reason !== 'asleep' && res.reason !== 'too-tired') this.hud.toast(res.message, { tone: 'warn' });
     if (res.ok) this.saveStores();
     this.hudDirty = true;
     return res;
   }
 
-  /** Workshop and Gallery sheets: the workshop keeps the pet in view like the Customizer. */
+  /** Workshop, Gallery and Inspector sheets: the workshop keeps the pet in view like the Customizer. */
   onSheetOpen(name) {
     this.sheet = name;
     document.body.classList.add(`${name}-open`);
@@ -584,6 +760,7 @@ class App {
     clearSavedPet(this.storage);
     clearTeachingMemory(this.storage);
     clearGallery(this.storage);
+    clearModel(this.storage);
     try {
       this.storage.removeItem(WORKSHOP_DRAFT_KEY);
     } catch {
@@ -593,7 +770,8 @@ class App {
 
   // ----- customizer -----------------------------------------------------------------
   openCustomizer({ firstRun = false } = {}) {
-    if (this.customizer.isOpen) return;
+    if (this.customizer.isOpen || this.workshop?.isOpen || this.galleryView?.isOpen || this.inspector?.isOpen) return;
+    if (this.practiceView?.isOpen) this.practiceView.close('switch');
     this.prevView = this.studio?.view ?? 'overview';
     this.pet.autonomy = false; // hold still (and face you) while being customised
     this.customizer.open({ appearance: this.pet.appearance, traits: this.pet.traits, firstRun });
@@ -641,7 +819,7 @@ class App {
     bottom = Math.min(bottom, dock.top);
     // The feedback bar floats above the dock: frame the studio above it so it never covers the pet.
     if (bar && bar.width > 0 && bar.height > 0) bottom = Math.min(bottom, bar.top);
-    const panel = this.customizer?.isOpen ? this.customizer.panelRect() : this.workshop?.isOpen ? this.workshop.panelRect() : null;
+    const panel = this.openPanelRect();
     if (panel && panel.width > 0) {
       if (panel.left > vw * 0.35) right = Math.min(right, panel.left);
       else bottom = Math.min(bottom, panel.top);
@@ -652,14 +830,72 @@ class App {
     return { x: Math.min(left + pad, vw - w), y: Math.min(top + pad, vh - h), w, h };
   }
 
+  /** The open drawer or bottom sheet that shares the screen with the studio (resting layout box). */
+  openPanelRect() {
+    if (this.customizer?.isOpen) return this.customizer.panelRect();
+    if (this.workshop?.isOpen) return this.workshop.panelRect();
+    if (this.practiceView?.isOpen) return this.practiceView.panelRect();
+    return null;
+  }
+
+  /** Open side drawers (right or left panels that reach down past the dock's band). */
+  sidePanels() {
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const p = this.openPanelRect();
+    if (!p || !p.width || p.bottom < vh - 140) return [];
+    return p.left > vw * 0.35 || p.right < vw * 0.65 ? [p] : [];
+  }
+
+  /**
+   * The horizontal span of the safe area at the dock's level: the full width
+   * minus any side drawer (the needs panel on desktop ends far above the
+   * dock, so it does not count). The dock centres itself in this lane via
+   * --safe-left / --safe-width, so it sits beside a drawer, never under it.
+   */
+  dockLane() {
+    const vw = window.innerWidth;
+    let left = 0;
+    let right = vw;
+    for (const p of this.sidePanels()) {
+      if (p.left > vw * 0.35) right = Math.min(right, p.left);
+      else left = Math.max(left, p.right);
+    }
+    return { left, width: Math.max(0, right - left) };
+  }
+
+  /** Picks the roomiest dock layout that fits its lane: full, short labels, compact (More), wrapped. */
+  fitDock() {
+    const dock = this.hud?.el.dock;
+    if (!dock) return null;
+    const modes = ['fit-tight', 'fit-compact', 'fit-wrap'];
+    dock.classList.remove(...modes);
+    if (window.innerWidth < 600) return null; // phones: the dock is already a two-row grid
+    if (dock.scrollWidth <= dock.clientWidth + 1) return null;
+    for (const m of modes) {
+      dock.classList.remove(...modes);
+      dock.classList.add(m);
+      if (dock.scrollWidth <= dock.clientWidth + 1) return m;
+    }
+    return 'fit-wrap';
+  }
+
   layout() {
     const vw = window.innerWidth;
     const vh = window.innerHeight;
+    const root = document.documentElement;
+    const lane = this.dockLane();
+    root.style.setProperty('--safe-left', `${Math.round(lane.left)}px`);
+    root.style.setProperty('--safe-width', `${Math.round(lane.width)}px`);
+    this.dockMode = this.fitDock();
     const dock = document.getElementById('dock').getBoundingClientRect();
     const bar = document.getElementById('creation-bar');
-    document.documentElement.style.setProperty('--dock-top', `${Math.round(vh - dock.top + 8)}px`);
-    const barTop = bar.hidden ? dock.top : Math.min(dock.top, bar.getBoundingClientRect().top);
-    document.documentElement.style.setProperty('--toast-bottom', `${Math.round(vh - barTop + 10)}px`);
+    root.style.setProperty('--dock-top', `${Math.round(vh - dock.top + 8)}px`);
+    let barTop = bar.hidden ? dock.top : Math.min(dock.top, bar.getBoundingClientRect().top);
+    // A non-modal bottom sheet (Sleep Practice on phones and tablets) lifts the toasts above it.
+    const panel = this.practiceView?.isOpen ? this.practiceView.panelRect() : null;
+    if (panel && panel.width && panel.left <= vw * 0.35) barTop = Math.min(barTop, panel.top);
+    root.style.setProperty('--toast-bottom', `${Math.round(vh - barTop + 10)}px`);
     this.safeRect = this.computeSafeRect();
     this.studio?.resize(vw, vh, this.safeRect, this.perf.dpr);
   }
@@ -680,7 +916,10 @@ class App {
     this.last = t;
     const pet = this.pet;
     pet.update(dt * this.timeScale);
+    // Sleep Practice trains in wall-clock time, a few steps per frame within a 4 ms budget.
+    this.practice.tick(dt);
     const a = pet.activity;
+    const dreaming = this.practice.running && pet.isAsleep;
 
     if (this.studio && this.model) {
       const ctx = this.ctx;
@@ -708,21 +947,24 @@ class App {
       vm.activity = a.type;
       vm.walkSpeed = pet.walkSpeed() * this.timeScale;
       vm.expression = pet.getExpression();
-      vm.bubble = pet.getBubble();
+      const dreamKind = dreaming ? this.practice.focusLesson()?.kind ?? 'music' : null;
+      // While it practises, a thought bubble shows what it is dreaming about.
+      vm.bubble = dreamKind ? { icon: dreamKind === 'drawing' ? 'draw' : 'note', kind: 'thought', key: `dream:${dreamKind}` } : pet.getBubble();
       this.model.update(dt, vm, ctx);
       this.studio.update(dt, {
         activity: a.type,
         petHead: this.model.getHeadWorldPosition(this.tmp.head),
         petFocus: this.tmp.focus.copy(this.model.root.position),
+        dream: dreamKind,
       });
       this.studio.render();
       this.trackPerf(dt);
     }
 
     if (this.hudDirty || t - this.lastHud > 160) {
-      this.hud.render(pet.snapshot());
+      this.hud.render(this.decorateSnapshot(pet.snapshot()));
       // The feedback bar hides while a sheet covers the studio; its appearance reframes the camera.
-      const bar = this.sheet || this.customizer.isOpen ? { visible: false } : this.flow.barState();
+      const bar = this.sheet || this.customizer.isOpen || this.practiceView?.isOpen ? { visible: false } : this.flow.barState();
       if (this.hud.renderCreationBar(bar)) this.layoutSoon();
       this.lastHud = t;
       this.hudDirty = false;
@@ -786,6 +1028,15 @@ class App {
     }
   }
 
+  /** Truthful status while Sleep Practice runs (the simulation only knows it is napping). */
+  decorateSnapshot(snap) {
+    const st = this.practice.status;
+    if (st === 'practicing' && snap.asleep) snap.status = { text: 'Practising in its dreams', short: 'Dreaming', icon: 'sleep' };
+    else if (st === 'waiting') snap.status = { text: 'Heading to bed to practise', short: 'To bed', icon: 'walk' };
+    else if (st === 'paused' && snap.asleep) snap.status = { text: 'Napping, practice paused', short: 'Paused', icon: 'sleep' };
+    return snap;
+  }
+
   /** Lowers the pixel ratio if frames are slow (simple adaptive quality). */
   trackPerf(dt) {
     const p = this.perf;
@@ -810,6 +1061,7 @@ class App {
     if (this.resetting) return { ok: false, reason: 'resetting' };
     const res = savePet(this.pet, this.storage);
     if (this.storesDirty) this.saveStores();
+    if (this.modelDirty) this.saveModelNow();
     this.lastSave = performance.now();
     this.dirty = false;
     if (!res.ok && !this.saveWarned) {
@@ -844,7 +1096,7 @@ class App {
     window.visualViewport?.addEventListener('resize', () => this.layoutSoon());
     if ('ResizeObserver' in window) {
       const ro = new ResizeObserver(() => this.layoutSoon());
-      for (const sel of ['.topbar', '#meters', '#dock', '#customizer', '#workshop', '#creation-bar']) {
+      for (const sel of ['.topbar', '#meters', '#dock', '#customizer', '#workshop', '#practice', '#creation-bar']) {
         const node = document.querySelector(sel);
         if (node) ro.observe(node);
       }
@@ -868,9 +1120,9 @@ class App {
     if (actions[key]) {
       e.preventDefault();
       this.action(actions[key]);
-    } else if (key === 't' || key === 'y') {
+    } else if (key === 't' || key === 'y' || key === 'z' || key === 'i') {
       e.preventDefault();
-      this.openFeature(key === 't' ? 'teach' : 'gallery');
+      this.openFeature({ t: 'teach', y: 'gallery', z: 'practice', i: 'inspector' }[key]);
     } else if (key === 'm') {
       this.toggleMute();
     } else if (key >= '1' && key <= String(CAMERA_VIEWS.length)) {
@@ -935,12 +1187,33 @@ class App {
     const petRect = this.studio && this.model ? this.studio.screenRectOfPoints(this.model.getSilhouettePoints(this.studio.camera)) : null;
     const petBox = this.studio && this.model ? this.studio.screenRect(this.model.getWorldBox()) : null;
     const hudRects = this.hud.rects();
-    const panel = this.workshop?.isOpen ? this.workshop.panelRect() : this.customizer?.isOpen ? this.customizer.panelRect() : null;
-    // The gallery is a full sheet over the studio, so the pet is not expected to be visible then.
+    const panel = this.openPanelRect();
+    // The gallery and the Inspector are full sheets over the studio, so the pet is not expected to be visible then.
     const blockers = { ...hudRects, ...(panel ? { panel } : {}) };
+    if (this.practiceView?.isOpen && !panel) blockers.practice = this.practiceView.panelRect();
     const overlap = (a, b) => !!a && !!b && b.width > 0 && a.x < b.right && a.x + a.width > b.left && a.y < b.bottom && a.y + a.height > b.top;
     const round = (r) => ({ x: Math.round(r.x), y: Math.round(r.y), width: Math.round(r.width), height: Math.round(r.height) });
     const bar = document.getElementById('creation-bar');
+    // The dock: hidden behind centred modal sheets, otherwise never under a side drawer.
+    const dockEl = document.getElementById('dock');
+    const dockCs = getComputedStyle(dockEl);
+    const dockRect = dockEl.getBoundingClientRect();
+    const dockHidden = dockCs.visibility === 'hidden' || Number(dockCs.opacity) < 0.05;
+    const sides = this.sidePanels();
+    const lane = this.dockLane();
+    // Notes cut in half by the edge of their scrolling sheet body (a line sliced by a sticky footer).
+    const sliced = [...document.querySelectorAll('dialog[open] .ws-note, dialog[open] .ws-note-compact')].filter(visible).filter((n) => {
+      const r = n.getBoundingClientRect();
+      let clip = { top: 0, bottom: vh };
+      for (let p = n.parentElement; p && p !== doc; p = p.parentElement) {
+        const cs = getComputedStyle(p);
+        if (cs.overflowY === 'visible') continue;
+        const pr = p.getBoundingClientRect();
+        clip = { top: Math.max(clip.top, pr.top), bottom: Math.min(clip.bottom, pr.bottom) };
+      }
+      const shown = Math.min(r.bottom, clip.bottom) - Math.max(r.top, clip.top);
+      return shown > 1 && shown < r.height - 1;
+    });
     return {
       viewport: { width: vw, height: vh, devicePixelRatio: window.devicePixelRatio || 1, renderPixelRatio: this.perf.dpr },
       view: this.studio?.view ?? null,
@@ -952,8 +1225,20 @@ class App {
         creationBar: bar.hidden ? null : rectOf(bar),
         workshop: this.workshop?.isOpen ? rectOf(this.workshop.dialog) : null,
         gallery: this.galleryView?.isOpen ? rectOf(this.galleryView.dialog) : null,
+        practice: this.practiceView?.isOpen ? rectOf(this.practiceView.dialog) : null,
+        inspector: this.inspector?.isOpen ? rectOf(this.inspector.dialog) : null,
       },
-      sheet: this.sheet ?? (this.customizer?.isOpen ? 'customizer' : null),
+      sheet: this.sheet ?? (this.customizer?.isOpen ? 'customizer' : this.practiceView?.isOpen ? 'practice' : null),
+      dock: {
+        rect: round(dockRect),
+        hidden: dockHidden,
+        mode: this.dockMode ?? 'full',
+        lane: { left: Math.round(lane.left), width: Math.round(lane.width) },
+        sidePanels: sides.map(round),
+        overlapsPanel: !dockHidden && sides.some((p) => overlap(dockRect, p)),
+        insideLane: dockRect.left >= lane.left - 0.5 && dockRect.right <= lane.left + lane.width + 0.5,
+      },
+      slicedNotes: sliced.map(describe),
       controls: controls.length,
       clippedControls: clipped.map(describe),
       overflowingLabels: overflowing.map(describe),
@@ -974,14 +1259,17 @@ class App {
     const app = this;
     const ws = app.workshop;
     const gv = app.galleryView;
+    const pv = app.practiceView;
+    const iv = app.inspector;
+    const nn = app.neural;
     const api = {
-      version: `${BUILD.version}-iteration-2`,
+      version: `${BUILD.version}-iteration-3`,
       build: BUILD,
-      iteration: 2,
+      iteration: 3,
       schemaVersion: SCHEMA_VERSION,
-      schemas: { pet: SCHEMA_VERSION, teach: TEACH_VERSION, gallery: GALLERY_VERSION },
+      schemas: { pet: SCHEMA_VERSION, teach: TEACH_VERSION, gallery: GALLERY_VERSION, model: MODEL_VERSION },
       ready: false,
-      learning: 'none: Iteration 2 adds teaching memory (stored demonstrations and labelled feedback) and an authored, seeded variation engine for the pet\'s attempts. No trainable parameters exist yet; genuine on-device learning arrives with Sleep Practice in Iteration 3.',
+      learning: 'on-device: two small float32 networks (MusicPolicyNet, StrokePolicyNet) train by gradient descent (Adam) during Sleep Practice on the lessons in teaching memory, with replay, held-out validation, rollback and checkpoints. Attempts stay authored until a network has trained, then blend in its output (generator neural-v1). Care, autonomy, walking and animation remain hand-written rules.',
       get pet() { return app.pet; },
       get state() { return app.pet.snapshot(); },
       get record() { return app.pet.toJSON(); },
@@ -1055,8 +1343,70 @@ class App {
         get lessons() { return app.memory.lessons.map((l) => ({ ...l })); },
         get prefs() { return { ...app.memory.prefs }; },
         get signals() { return app.memory.signals.map((s) => ({ ...s })); },
-        engine: ENGINE_INFO,
-        learning: 'none: lessons are stored examples; attempts come from the authored variation engine',
+        get engine() { return app.creative.info; },
+        authoredEngine: ENGINE_INFO,
+        learning: 'lessons are stored examples (memory); Sleep Practice trains the networks on them (learning)',
+      },
+      /** Sleep Practice (practice-runner.js + sleep-practice.js). */
+      practice: {
+        open: () => { app.openFeature('practice'); return pv.isOpen; },
+        close: () => pv.close('api'),
+        get isOpen() { return pv.isOpen; },
+        get state() { const s = app.practice.state(); return { ...s, history: s.history.length, open: pv.isOpen }; },
+        get status() { return app.practice.status; },
+        start: () => app.practice.start(),
+        pause: () => app.practice.pause('player'),
+        step: (n = 1) => { let r = null; for (let i = 0; i < n; i++) r = app.practice.stepOnce(); return r && { ok: r.ok, done: r.done, reason: r.reason ?? null }; },
+        cancel: () => app.practice.cancel(),
+        finish: () => { const r = app.finishPractice(); return { ok: r.ok, decision: r.result?.decision ?? null }; },
+        performLearned: () => { const r = app.performLearned(); return { ok: r.ok, reason: r.reason ?? null, generator: r.plan?.generator ?? null }; },
+        get comparison() {
+          const c = app.practice.result?.comparison;
+          return c ? { lessonId: c.lessonId, kind: c.kind, before: { generator: c.before.generator, closeness: c.before.closeness, alpha: c.before.alpha }, after: { generator: c.after.generator, closeness: c.after.closeness, alpha: c.after.alpha } } : null;
+        },
+        setSpeed: (stepsPerSecond) => { nn.settings.stepsPerSecond = Math.max(1, Math.min(5000, Number(stepsPerSecond) || 16)); return nn.settings.stepsPerSecond; },
+        setSessionSteps: (n) => { nn.settings.sessionSteps = Math.max(10, Math.min(5000, Math.round(Number(n) || 240))); return nn.settings.sessionSteps; },
+      },
+      /** Learning Inspector (developer diagnostics). */
+      inspector: {
+        open: () => { app.openFeature('inspector'); return iv.isOpen; },
+        close: () => iv.close('api'),
+        get isOpen() { return iv.isOpen; },
+        get summary() { return iv.summary(); },
+        get checkpoints() { return nn.listCheckpoints(); },
+        run: (n = 10) => { const r = iv.runSteps(n); iv.render(); return r.ok ? { ok: true, decision: r.decision.decision, steps: r.decision.steps } : r; },
+        save: () => iv.command('save'),
+        rollback: (id) => iv.command('rollback', id),
+        reset: () => { iv.confirmReset = 0; iv.command('reset'); return iv.command('reset'); },
+        measure: () => iv.command('measure'),
+      },
+      /** The learned networks themselves (read-only views plus a few diagnostics). */
+      modelNet: {
+        get architecture() { return nn.architecture(); },
+        get stats() { return nn.stats(); },
+        get parameters() { return nn.parameterCount; },
+        get settings() { return { ...nn.settings }; },
+        get history() { return nn.history.map((h) => ({ ...h })); },
+        get lastSession() { return nn.lastSession; },
+        steps: (kind) => nn.stepsFor(kind),
+        alpha: (kind, lessonId = null) => nn.alphaFor(kind, lessonId),
+        validation: () => { const v = nn.computeValidationLoss(); return { music: v.music, drawing: v.drawing, total: v.total, counts: v.counts }; },
+        data: () => { const d = nn.refreshData(); return Object.fromEntries(MODEL_KINDS.map((k) => [k, { train: d[k].train.length, val: d[k].val.length, lessons: d[k].lessons.length, counts: { ...d[k].counts } }])); },
+        /** The learned network's own version of a lesson (alpha 1, fixed seed): what practice taught it. */
+        generate: (lessonId, seed = 7) => {
+          const l = app.memory.getLesson(lessonId);
+          if (!l) return null;
+          return l.kind === 'music'
+            ? nn.composeMusic(l.demo, { seed, prefs: app.memory.prefs, traits: app.pet.traits, alpha: 1 })
+            : nn.reconstructDrawing(l.demo, { prefs: app.memory.prefs, traits: app.pet.traits });
+        },
+        /** The pet's real attempt at a lesson right now (hybrid engine, fixed seed). */
+        attempt: (lessonId, seed = 7) => {
+          const l = app.memory.getLesson(lessonId);
+          return l ? app.creative.compose(l.kind, l.demo, { seed, style: app.memory.prefs, traits: app.pet.traits, colors: app.pet.appearance, lessonId }) : null;
+        },
+        generator: NEURAL_GENERATOR,
+        save: () => app.saveModelNow(),
       },
       /** Creation Gallery (bounded, versioned history) and the studio wall frame. */
       gallery: {

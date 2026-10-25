@@ -98,7 +98,7 @@
     <section id="creation-bar" class="creation-bar glass" hidden aria-label="Creation feedback">
       <canvas class="cb-thumb" width="96" height="96" aria-hidden="true"></canvas>
       <div class="cb-info">
-        <p class="cb-title"><span class="cb-name">Your pet's version</span><span class="cb-origin" data-origin="attempt">Pet Attempt</span></p>
+        <p class="cb-title"><span class="cb-name">Your pet's version</span><span class="cb-origin" data-origin="attempt">Pet Attempt</span><span class="cb-learned" hidden title="Shaped by the networks it trained during Sleep Practice">Learned</span></p>
         <p class="cb-status" aria-live="polite">Listening…</p>
         <span class="cb-progress" aria-hidden="true"><i></i></span>
       </div>
@@ -140,17 +140,19 @@
     <dialog id="customizer" class="sheet customizer" aria-labelledby="cz-title"></dialog>
     <dialog id="workshop" class="sheet workshop" aria-labelledby="ws-title"></dialog>
     <dialog id="gallery" class="sheet gallery" aria-labelledby="gl-title"></dialog>
+    <dialog id="practice" class="sheet practice" aria-labelledby="sp-title"></dialog>
+    <dialog id="inspector" class="sheet inspector" aria-labelledby="in-title"></dialog>
 
     <dialog id="next-sheet" class="sheet next-sheet" aria-labelledby="next-title">
       <div class="sheet-head">
         <div>
           <h2 id="next-title">More in the studio</h2>
-          <p class="sheet-sub">Teach your pet, browse its gallery, and see what is coming next.</p>
+          <p class="sheet-sub">Teach your pet, browse its gallery, let it practise in its sleep, and look under the hood.</p>
         </div>
         <button class="icon-btn" type="button" data-close aria-label="Close"><svg class="ico" aria-hidden="true"><use href="#i-close"></use></svg></button>
       </div>
       <ul id="next-list" class="next-list"></ul>
-      <p class="sheet-note">Teaching stores your lessons in your pet's teaching memory, and it riffs on them with hand-written variation rules. That is memory, not machine learning: genuine on-device learning arrives with Sleep Practice and will be clearly labelled.</p>
+      <p class="sheet-note">Teaching stores your lessons in your pet's teaching memory (memory, not learning). During Sleep Practice two small neural networks genuinely train on them on this device; afterwards the pet's attempts blend in what they learned and are labelled "Learned".</p>
     </dialog>
 
     <div id="gl-error" class="gl-error glass" hidden role="alert">

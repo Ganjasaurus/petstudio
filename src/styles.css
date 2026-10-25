@@ -42,7 +42,7 @@ body {
   -webkit-user-select: none;
 }
 button, input { font: inherit; color: inherit; }
-button { -webkit-touch-callout: none; }
+button { -webkit-touch-callout: none; touch-action: manipulation; }
 :focus-visible { outline: 3px solid var(--lav); outline-offset: 2px; }
 .sprite { position: absolute; width: 0; height: 0; overflow: hidden; }
 .ico {
@@ -733,6 +733,218 @@ dialog.gallery::backdrop { background: rgba(60, 40, 60, 0.22); }
   .cb-nudge { padding: 0 4px; font-size: 12px; }
   .cb-close { width: 36px; height: 36px; }
   .gl-filter button { padding: 0 10px; }
+}
+
+/* =====================================================================
+   Iteration 3: dock lane, Sleep Practice, Learning Inspector
+   ===================================================================== */
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+.act[data-feature="practice"] { --c: #6f63d9; }
+.act[data-feature="inspector"] { --c: #2f86c4; }
+
+/* The dock centres itself in the safe lane (--safe-left / --safe-width, set by
+   layout()): a side drawer narrows the lane, so the dock moves beside it. */
+@media (min-width: 600px) {
+  .dock {
+    left: calc(var(--safe-left, 0px) + var(--safe-width, 100vw) / 2);
+    max-width: calc(var(--safe-width, 100vw) - 24px);
+    transition: left 0.3s cubic-bezier(0.2, 0.9, 0.3, 1), opacity 0.18s ease;
+  }
+  .toasts { left: calc(var(--safe-left, 0px) + var(--safe-width, 100vw) / 2); width: min(92vw, 460px, calc(var(--safe-width, 100vw) - 24px)); }
+  /* Fit modes when the lane is narrow: short labels, then the compact (More) layout, then two rows. */
+  .dock.fit-tight .act .lbl-long, .dock.fit-compact .act .lbl-long, .dock.fit-wrap .act .lbl-long { display: none; }
+  .dock.fit-tight .act .lbl-short, .dock.fit-compact .act .lbl-short, .dock.fit-wrap .act .lbl-short { display: inline; }
+  .dock.fit-compact .dock-label, .dock.fit-wrap .dock-label, .dock.fit-compact .next-buttons, .dock.fit-wrap .next-buttons { display: none; }
+  .dock.fit-compact .dock-group, .dock.fit-wrap .dock-group { padding-top: 0; }
+  .dock.fit-compact .more-btn, .dock.fit-wrap .more-btn { display: inline-flex; }
+  .dock.fit-wrap { width: calc(var(--safe-width, 100vw) - 24px); flex-wrap: wrap; justify-content: center; gap: 6px; padding: 8px; }
+  .dock.fit-wrap .dock-group { display: contents; }
+  .dock.fit-wrap .act { flex: 0 0 calc((100% - 24px) / 5); min-width: 0; padding: 5px 2px; }
+}
+/* Centred modal sheets cover the lower screen: the dock steps out of the way instead of peeking out. */
+body.modal-covered .dock { opacity: 0; visibility: hidden; pointer-events: none; transition: opacity 0.18s ease, visibility 0s linear 0.18s; }
+
+/* ---------- Teaching Workshop: notes never sliced, chips never cut ---------- */
+.ws-note-compact { display: none; }
+.chip-short { display: none; }
+.ws-body.more-below {
+  -webkit-mask-image: linear-gradient(180deg, #000 calc(100% - 26px), transparent);
+  mask-image: linear-gradient(180deg, #000 calc(100% - 26px), transparent);
+}
+@media (max-width: 599px) {
+  /* The honesty note moves into the footer as one short line, so the sticky footer can never slice it. */
+  .ws-body > .ws-note { display: none; }
+  .ws-foot { flex-wrap: wrap; row-gap: 3px; }
+  .ws-note-compact { display: block; flex: 1 0 100%; margin: 0; font-size: 11px; font-weight: 700; line-height: 1.3; color: var(--ink-soft); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* Chip rows fit on one line with short names: no scrolling, no fade, nothing cut off. */
+  .chip-long { display: none; }
+  .chip-short { display: inline; }
+  .ws-chips { -webkit-mask-image: none; mask-image: none; padding: 2px 0; overflow: visible; justify-content: space-between; gap: 5px; }
+  .ws-chip { flex: 1 1 auto; justify-content: center; min-width: 0; padding: 0 6px; }
+  /* Drawing tab: shapes on top, the canvas beside a column of colours and brush sizes, then mode and edit tools. */
+  .ws-panel[data-panel="drawing"] {
+    display: grid; gap: 8px; align-items: start;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-areas: "shapes shapes shapes" "canvas canvas swatches" "canvas canvas brushes" "mode actions actions";
+  }
+  .ws-panel[data-panel="drawing"] .ws-templates, .ws-panel[data-panel="drawing"] .ws-draw, .ws-panel[data-panel="drawing"] .ws-tools { display: contents; }
+  .ws-panel[data-panel="drawing"] .ws-chips { grid-area: shapes; }
+  .ws-panel[data-panel="drawing"] .ws-mode { grid-area: mode; margin-left: 0; align-self: center; }
+  .ws-panel[data-panel="drawing"] .ws-canvas-wrap { grid-area: canvas; justify-self: start; width: clamp(176px, calc(64dvh - 268px), 100%); }
+  .ws-panel[data-panel="drawing"] .ws-swatches { grid-area: swatches; display: grid; grid-template-columns: repeat(2, 34px); gap: 5px; flex: none; }
+  .ws-panel[data-panel="drawing"] .ws-brushes { grid-area: brushes; flex-direction: column; width: 73px; }
+  .ws-panel[data-panel="drawing"] .ws-brushes button { width: 100%; min-height: 34px; }
+  .ws-panel[data-panel="drawing"] .ws-draw-actions { grid-area: actions; justify-self: end; align-self: center; }
+  /* Music tab: slightly tighter rows so tempo, length and All notes fit above the footer on a 844 px phone. */
+  .ws-body { gap: 7px; }
+  .ws-panel { gap: 7px; }
+  .ws-timeline { height: 54px; }
+  .ws-octave.penta { height: 74px; }
+  .ws-pad { min-height: 42px; }
+  .ws-transport .btn { min-height: 40px; }
+  .ws-settings { gap: 6px 8px; }
+  .ws-tempo input[type="range"] { height: 30px; }
+  body.practice-open .meters { display: none; }
+}
+
+/* ---------- Learned badges ---------- */
+.cb-learned, .gl-learned {
+  flex: none; padding: 2px 7px; border-radius: 999px; font-size: 10.5px; font-weight: 800; white-space: nowrap;
+  background: linear-gradient(90deg, #efe9ff, #ffe6f1); color: #5a3fb8; box-shadow: inset 0 0 0 1px rgba(143, 124, 240, 0.35);
+}
+.cb-learned::before, .gl-learned::before { content: "\2726  "; }
+
+/* ---------- Sleep Practice drawer (non-modal: the sleeping pet stays visible and touchable) ---------- */
+dialog.practice { z-index: 15; }
+.practice[open] {
+  position: fixed; inset: auto 0 0 0; width: 100%; height: 56vh; height: 56dvh; max-height: 600px;
+  border-radius: 24px 24px 0 0; display: flex; flex-direction: column; animation: sheet-up 0.32s cubic-bezier(0.2, 0.9, 0.3, 1);
+}
+.sp-head { display: flex; align-items: center; gap: 10px; padding: 12px 14px 10px; border-bottom: 1px solid var(--line); }
+.sp-moon { flex: none; display: grid; place-items: center; width: 40px; height: 40px; border-radius: 14px; color: #fff; background: linear-gradient(135deg, #7d6ae6, #c2b3ff); box-shadow: var(--shadow-sm); }
+.practice[data-status="practicing"] .sp-moon { animation: dream-glow 2.6s ease-in-out infinite; }
+@keyframes dream-glow { 50% { box-shadow: 0 0 0 6px rgba(143, 124, 240, 0.18), var(--shadow-sm); } }
+.sp-titles { flex: 1; min-width: 0; }
+.sp-titles h2 { margin: 0; font-size: 19px; font-weight: 800; }
+.sp-titles h2:focus { outline: none; }
+.sp-status { margin: 2px 0 0; font-size: 12.5px; font-weight: 700; line-height: 1.35; color: var(--ink-soft); }
+.sp-head .icon-btn { flex: none; background: rgba(255, 255, 255, 0.8); box-shadow: var(--shadow-sm); }
+.sp-body {
+  flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain;
+  padding: 12px 14px 16px; display: flex; flex-direction: column; gap: 12px;
+}
+.sp-empty { padding: 12px; border-radius: 16px; background: #fff; box-shadow: var(--shadow-sm); line-height: 1.45; }
+.sp-empty p { margin: 0 0 10px; }
+.sp-dream { display: grid; grid-template-columns: 132px minmax(0, 1fr); align-items: center; gap: 12px; padding: 10px; border-radius: 18px; background: linear-gradient(135deg, #f1ecff, #fff3f8); }
+.sp-dream-canvas { display: block; width: 132px; height: 96px; border-radius: 12px; background: #fff; box-shadow: inset 0 0 0 1px var(--line); }
+.sp-dream-info { min-width: 0; }
+.sp-kicker { margin: 0; font-size: 10.5px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; color: #6f63d9; }
+.sp-dream-info h3 { margin: 2px 0; font-size: 16px; font-weight: 800; overflow-wrap: anywhere; }
+.sp-dream-sub { margin: 0; font-size: 12px; font-weight: 700; line-height: 1.35; color: var(--ink-soft); }
+.sp-stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 0; }
+.sp-stats div { min-width: 0; padding: 8px 10px; border-radius: 14px; background: #fff; box-shadow: var(--shadow-sm); }
+.sp-stats dt { font-size: 10.5px; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase; color: var(--ink-soft); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sp-stats dd { margin: 2px 0 0; font-size: 16px; font-weight: 900; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sp-chart, .in-sec .sp-chart { margin: 0; padding: 8px; border-radius: 16px; background: #fff; box-shadow: var(--shadow-sm); }
+.sp-chart figcaption { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; margin-top: 4px; font-size: 11.5px; font-weight: 700; color: var(--ink-soft); }
+.sp-chart .key { display: inline-block; width: 16px; height: 0; border-top: 3px solid var(--lav); border-radius: 2px; }
+.sp-chart .key.val { border-top: 3px dashed var(--accent-deep); margin-left: 6px; }
+.loss-chart { display: block; width: 100%; height: 120px; }
+.loss-chart .plot { fill: #fffdfb; stroke: var(--line); }
+.loss-chart .line { fill: none; stroke-width: 2.4; stroke-linejoin: round; stroke-linecap: round; }
+.loss-chart .train { stroke: var(--lav); }
+.loss-chart .val { stroke: var(--accent-deep); stroke-dasharray: 6 4; }
+.loss-chart .mark { stroke: rgba(110, 72, 92, 0.28); stroke-dasharray: 2 3; }
+.loss-chart .mark-rollback, .loss-chart .mark-cancel { stroke: rgba(229, 72, 77, 0.55); }
+.loss-chart text { font-family: var(--font); font-size: 9.5px; font-weight: 700; fill: var(--ink-soft); }
+.sp-tools { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.sp-tools .btn { min-width: 0; white-space: nowrap; font-size: 13.5px; }
+.sp-compare { padding: 12px; border-radius: 18px; background: linear-gradient(135deg, #fff, #f6f2ff); box-shadow: var(--shadow-sm); }
+.sp-compare h3 { margin: 0; font-size: 15px; }
+.sp-compare-sub { margin: 3px 0 8px; font-size: 12px; font-weight: 700; color: var(--ink-soft); }
+.sp-pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.sp-pair figure { display: flex; flex-direction: column; gap: 6px; min-width: 0; margin: 0; padding: 8px; border-radius: 14px; background: #fff; box-shadow: var(--shadow-sm); }
+.sp-pair canvas { display: block; width: 100%; aspect-ratio: 4 / 3; max-height: 170px; border-radius: 10px; }
+.sp-pair figcaption { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; font-size: 12px; font-weight: 800; }
+.sp-tag { padding: 2px 8px; border-radius: 99px; background: #ece6dc; color: #685538; font-size: 10.5px; }
+.sp-tag.learned { background: linear-gradient(90deg, #efe9ff, #ffe6f1); color: #5a3fb8; }
+.sp-perform { width: 100%; margin-top: 10px; min-height: 48px; white-space: normal; text-align: center; line-height: 1.2; }
+.sp-note { margin: 0; font-size: 11.5px; line-height: 1.45; color: var(--ink-soft); }
+.sp-foot { display: flex; gap: 8px; padding: 10px 14px calc(10px + var(--sb)); border-top: 1px solid var(--line); background: #fffdfb; }
+.sp-foot .btn { flex: 1 1 auto; min-width: 0; padding: 0 10px; white-space: nowrap; }
+.sp-foot .btn.primary { flex-grow: 1.4; }
+@media (min-width: 600px) {
+  .sp-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@media (min-width: 900px) {
+  .practice[open] {
+    inset: calc(var(--st) + 12px) calc(var(--sr) + 12px) calc(var(--sb) + 12px) auto;
+    width: 420px; height: auto; max-height: none; border-radius: 24px; animation-name: sheet-in;
+  }
+  .sp-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .loss-chart { height: 132px; }
+}
+@media (max-width: 599px) {
+  .sp-head { padding: 10px 12px 8px; }
+  .sp-body { padding: 10px 12px 14px; gap: 10px; }
+  .sp-dream { grid-template-columns: 112px minmax(0, 1fr); gap: 10px; }
+  .sp-dream-canvas { width: 112px; height: 84px; }
+  .sp-stats dd { font-size: 15px; }
+  .sp-foot { gap: 6px; padding: 8px 12px calc(8px + var(--sb)); }
+  .sp-foot .btn { padding: 0 8px; font-size: 13.5px; }
+  .sp-foot [data-sp="pause"] .ico, .sp-foot [data-sp="finish"] .ico { display: none; }
+}
+
+/* ---------- Learning Inspector (centred sheet on desktop, bottom sheet on phones) ---------- */
+dialog.inspector::backdrop { background: rgba(60, 40, 60, 0.22); }
+.inspector[open] {
+  position: fixed; inset: auto 0 0 0; width: 100%; height: 88vh; height: 88dvh;
+  border-radius: 24px 24px 0 0; display: flex; flex-direction: column; animation: sheet-up 0.32s cubic-bezier(0.2, 0.9, 0.3, 1);
+}
+.in-head h2:focus { outline: none; }
+.in-body { flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; padding: 12px 16px 20px; display: flex; flex-direction: column; gap: 18px; user-select: text; -webkit-user-select: text; }
+.in-msg { margin: 0; padding: 9px 12px; border-radius: 12px; background: #f1edff; color: #4a37a6; font-size: 13px; font-weight: 800; }
+.in-sec h3 { margin: 0 0 8px; font-size: 11.5px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-soft); }
+.in-nets { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 10px; }
+.in-net { padding: 12px; border-radius: 16px; background: #fff; box-shadow: var(--shadow-sm); }
+.in-net header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.in-net h4 { margin: 0; font-size: 15px; }
+.in-mode { flex: none; padding: 2px 8px; border-radius: 99px; font-size: 10.5px; font-weight: 800; }
+.in-mode[data-mode="learned"] { background: #dcf2e7; color: #2d7553; }
+.in-mode[data-mode="authored"] { background: #ece6dc; color: #685538; }
+.in-net dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 12px; margin: 0; }
+.in-net dt { font-size: 11px; font-weight: 700; color: var(--ink-soft); }
+.in-net dd { margin: 0; font-size: 13.5px; font-weight: 800; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.in-net small { color: var(--ink-soft); font-weight: 700; }
+.in-total { margin: 8px 0 0; font-size: 12.5px; font-weight: 700; color: var(--ink-soft); line-height: 1.45; }
+.in-table-wrap { overflow-x: auto; border-radius: 14px; background: #fff; box-shadow: var(--shadow-sm); }
+.in-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.in-table th, .in-table td { padding: 8px 10px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: middle; }
+.in-table thead th { font-size: 11px; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase; color: var(--ink-soft); white-space: nowrap; }
+.in-table tbody th { font-weight: 700; color: var(--ink-soft); }
+.in-table tr:last-child td, .in-table tr:last-child th { border-bottom: 0; }
+.in-table small { color: var(--ink-soft); }
+.in-kind, .in-ck { display: inline-block; padding: 2px 8px; border-radius: 99px; font-size: 10.5px; font-weight: 800; white-space: nowrap; background: #ece6dc; color: #685538; }
+.in-kind[data-kind="learned"] { background: #dcf2e7; color: #2d7553; }
+.in-kind[data-kind="memory"] { background: #dbf0fb; color: #1d6b95; }
+.in-kind[data-kind="shared"] { background: #f1edff; color: #4a37a6; }
+.in-ck[data-kind="latest"] { background: #dcf2e7; color: #2d7553; }
+.in-ck[data-kind="pre-sleep"] { background: #f1edff; color: #4a37a6; }
+.in-ck[data-kind="user"] { background: #fff1cc; color: #7a5a00; }
+.in-mini { min-height: 36px; padding: 0 10px; font-size: 12.5px; white-space: nowrap; }
+.in-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.in-danger.confirm { background: #ffe3e0; color: #b42318; box-shadow: inset 0 0 0 2px #f97066; }
+.in-hint { margin: 0 0 8px; font-size: 12px; line-height: 1.45; color: var(--ink-soft); }
+.in-sec > .btn { margin-top: 10px; }
+.in-settings { display: grid; grid-template-columns: repeat(auto-fill, minmax(165px, 1fr)); gap: 10px 12px; }
+.in-field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; font-weight: 800; color: var(--ink-soft); }
+.in-field input, .in-field select {
+  min-height: 40px; padding: 0 10px; border: 2px solid var(--line); border-radius: 12px; background: #fff;
+  color: var(--ink); font: inherit; font-size: 14px; font-weight: 800; user-select: text; -webkit-user-select: text;
+}
+.in-field input:focus, .in-field select:focus { outline: none; border-color: var(--lav); }
+@media (min-width: 900px) {
+  .inspector[open] { inset: 0; margin: auto; width: min(980px, 92vw); height: min(860px, 90vh); border-radius: 24px; }
 }
 
 /* ---------- reduced motion ---------- */

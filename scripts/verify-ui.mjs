@@ -1,15 +1,20 @@
 /**
- * verify-ui.mjs: end-to-end UI verification of the Iteration 2 features in
- * headless Microsoft Edge at 390x844 (phone, touch), 768x1024 (tablet,
- * touch) and 1440x900 (desktop, mouse).
+ * verify-ui.mjs: end-to-end UI verification of the Iteration 2 and 3
+ * features in headless Microsoft Edge at 390x844 (phone, touch), 768x1024
+ * (tablet, touch) and 1440x900 (desktop, mouse).
  *
  * Uses real input (CDP touch / mouse events) to open the Teaching Workshop
  * (dock on desktop, More sheet on phone and tablet), play keys and pads,
  * load templates, record, draw and stamp, teach music and drawing, give
  * feedback in the Creation Feedback Bar, browse / compare / hang in the
- * Creation Gallery and reload to check persistence. At every step it records
+ * Creation Gallery, run Sleep Practice (start, pause, step, cancel and
+ * rollback, practise again, compare before and after, perform the learned
+ * version), use the Learning Inspector (run steps, save, rollback, reset)
+ * and reload to check persistence. At every step it records
  * window.__PET_STUDIO__.layout() and fails on console errors, horizontal
- * overflow, clipped controls or the pet overlapping the UI.
+ * overflow, clipped controls, notes sliced by a sheet footer, the dock under
+ * a side drawer (or peeking out under a centred sheet) or the pet
+ * overlapping the UI.
  *
  *   npm run build && node scripts/verify-ui.mjs [--only=phone|tablet|desktop]
  * Screenshots and a JSON summary are written to artifacts/verify/.
@@ -54,7 +59,7 @@ async function runDevice(browser, server, device) {
       throw new Error(`${err.message}\n   state: ${await diag()}`);
     }
   };
-  const layout = async (step, { petVisible = true } = {}) => {
+  const layout = async (step, { petVisible = true, dockHidden = false } = {}) => {
     if (petVisible) {
       // Let the damped camera finish reframing first (software rendering is slow).
       await page.waitFor('window.__PET_STUDIO__.camera.settled', { timeout: 25000 }).catch(() => {});
@@ -64,22 +69,37 @@ async function runDevice(browser, server, device) {
     check(`[${step}] no horizontal overflow`, !r.horizontalOverflow, r.horizontalOverflow);
     check(`[${step}] no clipped controls`, r.clippedControls.length === 0, r.clippedControls);
     check(`[${step}] no labels spilling out of their buttons`, r.overflowingLabels.length === 0, r.overflowingLabels);
+    check(`[${step}] no note sliced by a sheet footer`, r.slicedNotes.length === 0, r.slicedNotes);
+    check(`[${step}] dock clear of every open side drawer`, !r.dock.overlapsPanel && (r.dock.hidden || r.dock.insideLane), r.dock);
+    if (dockHidden) check(`[${step}] dock steps aside under the centred sheet`, r.dock.hidden, r.dock);
     if (petVisible && r.pet) check(`[${step}] pet inside the free area, clear of the UI`, r.pet.insideSafeRect && !r.pet.overlapsUI, { pet: r.pet, safe: r.safeRect, settled: r.cameraSettled });
     return r;
   };
   /** Waits until no CSS animation is running (sheets slide in; taps mid-slide would miss). */
   const settleAnimations = () => page.waitFor('document.getAnimations().every((a) => a.playState !== "running" || a.effect?.getTiming().iterations === Infinity)', { timeout: 4000 }).catch(() => {});
-  const openFeature = async (id) => {
+  const DIALOG = { teach: 'workshop', gallery: 'gallery', practice: 'practice', inspector: 'inspector' };
+  let moreChecked = false;
+  const openFeature = async (id, attempt = 0) => {
+    await settleAnimations(); // the dock glides beside drawers: never tap it mid-slide
     const inline = await page.center(`#next-buttons [data-feature="${id}"]`);
     if (inline) {
       await page.tap(`#next-buttons [data-feature="${id}"]`);
+      const opened = await page.waitFor(`document.getElementById("${DIALOG[id]}").open`, { timeout: 3000 }).catch(() => false);
+      if (!opened && attempt === 0) {
+        console.log(`  (retrying the ${id} tap: ${JSON.stringify(await page.eval('window.__PET_STUDIO__.layout().dock'))})`);
+        return openFeature(id, 1);
+      }
     } else {
       await page.tap('#dock .more-btn');
       await page.waitFor('document.getElementById("next-sheet").open');
       await settleAnimations();
+      if (!moreChecked) {
+        moreChecked = true;
+        await layout('more-sheet', { petVisible: false, dockHidden: true });
+      }
       await page.tap(`#next-list button[data-feature="${id}"]`);
     }
-    await page.waitFor(`document.getElementById("${id === 'teach' ? 'workshop' : 'gallery'}").open`);
+    await page.waitFor(`document.getElementById("${DIALOG[id]}").open`);
     await settleAnimations();
   };
 
@@ -87,8 +107,9 @@ async function runDevice(browser, server, device) {
   await page.goto(`${server.url}?skipIntro=1&seed=verify-${device.name}&mute=1`, { readyExpr: READY, timeout: 60000 });
   await page.sleep(1500);
   await layout('studio');
-  check('teach and gallery hooks are registered as real features', await S("api.features.list().filter(f => f.available).map(f => f.id).join(',') === 'teach,gallery'"));
-  check('inspection API exposes teach and gallery', await S("typeof api.teach.open === 'function' && typeof api.gallery.open === 'function' && api.iteration === 2"));
+  check('teach, gallery, practice and inspector hooks are registered as real features', await S("api.features.list().filter(f => f.available).map(f => f.id).join(',') === 'teach,gallery,practice,inspector'"));
+  check('inspection API exposes teach, gallery, practice, inspector and modelNet', await S("typeof api.teach.open === 'function' && typeof api.gallery.open === 'function' && typeof api.practice.open === 'function' && typeof api.inspector.open === 'function' && api.modelNet.parameters === 5543 && api.iteration === 3"));
+  check('a new pet starts with untrained networks (authored attempts)', await S("api.modelNet.steps('music') === 0 && api.modelNet.steps('drawing') === 0 && api.teach.engine.generators.music === 'imitate-phrase-v1'"));
 
   // Regression guard for the shared framing code: the Iteration 1 customizer still frames the pet.
   await page.tap('#btn-customize');
@@ -160,6 +181,18 @@ async function runDevice(browser, server, device) {
   await page.sleep(1100);
   check('shape stamp adds strokes', (await S('api.teach.drawing.strokes.length')) >= 2);
   await layout('workshop-drawing');
+  // Every shape chip is whole: not cut by its row, the sheet edge or the Stamp | Trace toggle.
+  const chipIssues = await page.eval(`(() => {
+    const sheet = document.getElementById('workshop').getBoundingClientRect();
+    const mode = document.querySelector('[data-panel="drawing"] .ws-mode').getBoundingClientRect();
+    const hit = (a, b) => a.left < b.right - 0.5 && a.right > b.left + 0.5 && a.top < b.bottom - 0.5 && a.bottom > b.top + 0.5;
+    return [...document.querySelectorAll('[data-panel="drawing"] .ws-chip')].filter((c) => {
+      const r = c.getBoundingClientRect();
+      const row = c.parentElement.getBoundingClientRect();
+      return r.left < row.left - 0.5 || r.right > row.right + 0.5 || r.left < sheet.left || r.right > sheet.right || hit(r, mode) || c.scrollWidth > c.clientWidth + 1;
+    }).map((c) => c.textContent.trim());
+  })()`);
+  check('every shape chip is fully visible, clear of the Stamp | Trace toggle', chipIssues.length === 0, chipIssues);
   await shot('workshop-drawing');
   await page.tap('[data-ws="replay"]');
   check('Replay Strokes animates the drawing', await S('api.teach.state.replaying'));
@@ -213,6 +246,20 @@ async function runDevice(browser, server, device) {
   await S('api.setTimeScale(6)');
   await waitState('window.__PET_STUDIO__.creation.bar.phase === "done"', 40000);
   await S('api.setTimeScale(1)');
+  // Once the piece is over and the pet walks away, the camera stops aiming at the Music Corner.
+  check('the camera shows the Music Corner while the pet performs there', (await S('api.camera.view')) === 'music');
+  for (let i = 0; i < 3 && (await S('api.state.activity.type')) !== 'walking'; i++) {
+    await S('api.actions.listen()'); // a stubborn pet may refuse once, never twice in a row
+    await page.sleep(200);
+  }
+  await waitState('window.__PET_STUDIO__.state.activity.type === "walking"', 10000);
+  await page.sleep(300);
+  check('when the pet walks away from the station the camera returns to the overview', (await S('api.camera.view')) === 'overview');
+  await S('api.setTimeScale(6)');
+  await waitState('window.__PET_STUDIO__.state.activity.type !== "walking"', 30000);
+  await S('api.setTimeScale(1)');
+  await layout('after-performance');
+  await shot('after-performance');
 
   // ----- Teach a drawing (via the sheet again) -------------------------------------
   await openFeature('teach');
@@ -242,7 +289,7 @@ async function runDevice(browser, server, device) {
   const items = await S('api.gallery.items');
   check('gallery lists lessons and attempts with origin badges', items.some((i) => i.origin === 'taught') && items.some((i) => i.origin === 'attempt'), items.map((i) => `${i.origin}:${i.kind}`));
   check('gallery cards show badge, time, star and tags', (await page.eval('[...document.querySelectorAll(".gl-card")].every(c => c.querySelector(".gl-origin") && c.querySelector("time") && c.querySelector(".gl-star"))')) && (await page.eval('!!document.querySelector(".gl-tag")')));
-  await layout('gallery', { petVisible: false });
+  await layout('gallery', { petVisible: false, dockHidden: true });
   await shot('gallery');
   await page.tap('.gl-card[data-kind="music"] [data-gl="listen"]');
   check('Listen plays a song inside the gallery (no pet needed)', await S('api.gallery.state.playing'));
@@ -257,6 +304,7 @@ async function runDevice(browser, server, device) {
   await page.sleep(300);
   await page.tap('.gl-card[data-kind="music"][data-origin="attempt"] [data-gl="vs-lesson"]');
   await page.sleep(800);
+  await layout('gallery-compare-music', { petVisible: false, dockHidden: true });
   await page.tap('[data-gl="play-both"]');
   check('compare can play both songs one after the other', await S('api.gallery.state.playing'));
   await shot('gallery-compare-music');
@@ -287,6 +335,99 @@ async function runDevice(browser, server, device) {
   check('gallery, wall pin and teaching memory persist across reload', JSON.stringify(before) === JSON.stringify(after), { before, after });
   check('the wall frame shows the pinned drawing after reload', await S('api.gallery.wallArt.pinned === true'));
   await layout('after-reload');
+
+  // ----- Sleep Practice: genuine on-device training while the pet naps -------------------
+  await S('api.practice.setSpeed(40)');
+  await openFeature('practice');
+  check('Sleep Practice opens as a non-modal drawer (the studio stays live)', await S('api.practice.isOpen && document.querySelectorAll("dialog:modal").length === 0'));
+  await S('api.setTimeScale(6)');
+  await waitState('window.__PET_STUDIO__.practice.status === "practicing"', 60000);
+  await S('api.setTimeScale(1)');
+  check('opening Practice sends the pet to the Sleep Nook and it practises asleep', await S('api.state.asleep && api.camera.view === "sleep"'));
+  await page.waitFor('window.__PET_STUDIO__.practice.state.sessionSteps >= 45', { timeout: 60000 });
+  const p1 = await S('api.practice.state');
+  check('training runs in time slices while the studio keeps animating', p1.sessionSteps >= 45 && p1.status === 'practicing', p1);
+  check('live counters: steps, epoch and batch, training and validation loss, weight change, confidence',
+    p1.epoch >= 1 && p1.batchesPerEpoch >= 1 && Number.isFinite(p1.trainLoss) && Number.isFinite(p1.valLoss) && p1.deltaNorm > 0 && p1.confidence > 0, p1);
+  check('the dream preview names the lesson it is practising', !!p1.dream && (await page.eval('document.querySelector("#practice [data-sp-dream]").textContent.trim().length > 3')));
+  check('the loss chart draws the training and validation curves', await page.eval('["train", "val"].every((k) => document.querySelector(`#practice [data-line="${k}"]`).getAttribute("points").split(" ").length >= 2)'));
+  check('the status pill says it is practising in its dreams', /Practising|Dreaming/.test(await page.eval('document.getElementById("status-text").textContent')));
+  check('dream notes drift up from the sleeping pet', (await S('api.renderInfo().particles')) > 0);
+  await layout('practice');
+  await shot('practice');
+  await page.tap('#practice [data-sp="pause"]');
+  check('Pause stops training', await S('api.practice.status === "paused"'));
+  const steps0 = await S('api.practice.state.sessionSteps');
+  await page.tap('#practice [data-sp="step"]');
+  check('Step +1 runs exactly one mini-batch', (await S('api.practice.state.sessionSteps')) === steps0 + 1);
+  await page.tap('#practice [data-sp="cancel"]');
+  check('Cancel & Rollback restores the weights from before practice', await S('api.practice.status === "cancelled" && api.modelNet.steps("music") === 0 && api.modelNet.steps("drawing") === 0'));
+  await page.tap('#practice [data-sp="start"]');
+  await waitState('window.__PET_STUDIO__.practice.status === "practicing"', 20000);
+  await S('api.practice.setSpeed(500)');
+  await waitState('["complete", "rolled-back"].includes(window.__PET_STUDIO__.practice.status)', 120000);
+  const done = await S('api.practice.state');
+  check('a full session passes held-out validation and commits', done.result?.decision === 'committed' && done.status === 'complete', done.result);
+  check('genuine weight updates: both networks moved away from the untrained baseline', await S('api.modelNet.stats.music.deltaNorm > 0.5 && api.modelNet.stats.drawing.deltaNorm > 0.5'));
+  const cmp = await S('api.practice.comparison');
+  check('before vs after uses the same seeds: authored before, learned after', !!cmp && /^imitate-/.test(cmp.before.generator) && cmp.after.generator === 'neural-v1', cmp);
+  // A nudged style (this pet was told "calmer") can legitimately move the attempt away from the
+  // lesson, so closeness is reported here; tests/neural-engine.test.mjs asserts it across many cases.
+  check(`before vs after closeness reported (${cmp?.before.closeness} -> ${cmp?.after.closeness})`, !!cmp && cmp.before.closeness > 0 && cmp.after.closeness > 0, cmp);
+  await page.eval('document.querySelector("#practice .sp-body").scrollTop = 1e6');
+  await page.sleep(500);
+  await layout('practice-complete');
+  await shot('practice-complete');
+  await page.tap('#practice [data-sp="perform"]');
+  await page.waitFor('!window.__PET_STUDIO__.practice.isOpen', { timeout: 5000 });
+  check('the pet wakes to perform what it practised', await S('!api.state.asleep'));
+  await S('api.setTimeScale(6)');
+  await waitState('["playing_music", "drawing"].includes(window.__PET_STUDIO__.state.activity.type)', 60000);
+  await S('api.setTimeScale(1)');
+  await page.sleep(1200);
+  check('the feedback bar marks the learned version', await S('api.creation.bar.visible && api.creation.bar.learned === true'));
+  await layout('performing-learned');
+  await shot('performing-learned');
+  await S('api.setTimeScale(8)');
+  await waitState('window.__PET_STUDIO__.creation.bar.phase === "done"', 60000);
+  await S('api.setTimeScale(1)');
+  check('the learned version is saved to the gallery tagged neural-v1', await S("api.gallery.items.some((i) => i.origin === 'attempt' && i.generator === 'neural-v1')"));
+
+  // ----- The learned state survives a reload ----------------------------------------
+  const model = await S('({ music: api.modelNet.steps("music"), drawing: api.modelNet.steps("drawing"), val: api.modelNet.validation().total, attempt: JSON.stringify(api.modelNet.generate(api.teach.lessons[0].id)) })');
+  await S('api.save()');
+  await page.goto(`${server.url}?skipIntro=1&mute=1`, { readyExpr: READY, timeout: 60000 });
+  await page.sleep(1200);
+  const model2 = await S('({ music: api.modelNet.steps("music"), drawing: api.modelNet.steps("drawing"), val: api.modelNet.validation().total, attempt: JSON.stringify(api.modelNet.generate(api.teach.lessons[0].id)) })');
+  check('learned weights reload exactly (same steps, validation loss and output)', model.music === model2.music && model.drawing === model2.drawing && Math.abs(model.val - model2.val) < 1e-9 && model.attempt === model2.attempt, { model, model2 });
+
+  // ----- Learning Inspector -----------------------------------------------------------
+  await openFeature('inspector');
+  await page.sleep(500);
+  await layout('inspector', { petVisible: false, dockHidden: true });
+  const text = await page.eval('document.getElementById("inspector").textContent');
+  check('inspector: both networks with layer sizes and parameter counts', ['MusicPolicyNet', 'StrokePolicyNet', '3,290', '2,253', '5,543', '75 → 32 tanh → 26'].every((s) => text.includes(s)));
+  check('inspector: replay buffer, signals and the learned-vs-authored table', ['Love signals', 'Direction signals', 'Needs, moods and care', 'Learned', 'Authored'].every((s) => text.includes(s)));
+  const total0 = await S('api.modelNet.stats.totalSteps');
+  await page.tap('#inspector [data-in="run"]');
+  check('Run 10 Training Steps really trains (or safely rolls back)', (await S('api.modelNet.stats.totalSteps')) === total0 + 10);
+  await page.tap('#inspector [data-in="save"]');
+  check('Save Checkpoint adds a named checkpoint', await S("api.inspector.checkpoints.some((c) => c.kind === 'user')"));
+  await page.tap('#inspector [data-in="measure"]');
+  check('the evidence table compares authored, untrained-at-same-alpha and learned', (await page.eval('document.querySelectorAll("#inspector [data-in-evidence] tbody tr").length')) >= 2);
+  await shot('inspector');
+  const preSteps = await S("api.inspector.checkpoints.find((c) => c.id === 'pre-sleep').steps");
+  await page.tap('#inspector [data-ckpt="pre-sleep"] [data-in="rollback"]');
+  check('Rollback to Checkpoint restores that checkpoint', (await S('api.modelNet.steps("music")')) === preSteps.music && (await S('api.modelNet.steps("drawing")')) === preSteps.drawing);
+  await page.tap('#inspector [data-in="reset"]');
+  check('Reset asks for a second tap first', /again/i.test(await page.eval('document.querySelector("#inspector [data-in=\\"reset\\"]").textContent')));
+  await page.sleep(600);
+  await page.tap('#inspector [data-in="reset"]');
+  const reset = await S('({ music: api.modelNet.steps("music"), drawing: api.modelNet.steps("drawing"), delta: api.modelNet.stats.deltaNorm, msg: api.inspector.summary.message })');
+  check('Reset Model to Untrained (confirmed) returns to the baseline', reset.music === 0 && reset.drawing === 0 && reset.delta === 0, reset);
+  await page.key('Escape');
+  await page.sleep(300);
+  check('Escape closes the Inspector', !(await S('api.inspector.isOpen')));
 
   // ----- A napping pet cannot take a lesson; the sheet says why; Escape closes it -----
   await S('api.setNeeds({ energy: 16 })');

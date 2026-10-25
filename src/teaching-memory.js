@@ -19,7 +19,7 @@
  * and ~600 KB serialised. Pure ES module; persistence via persist.js.
  */
 import { sanitizePhrase, sanitizeDrawing, phraseIsEmpty, drawingIsEmpty } from './teaching-core.js';
-import { sanitizeStyle, applyNudge, NUDGE_IDS } from './creative-engine.js';
+import { sanitizeStyle, sanitizeModelTag, applyNudge, NUDGE_IDS } from './creative-engine.js';
 import { loadVersioned, saveVersioned, removeKeys } from './persist.js';
 
 export const TEACH_SCHEMA = 'petstudio.teach';
@@ -103,6 +103,7 @@ export function sanitizePlan(p) {
     tags: Array.isArray(p.tags) ? [...new Set(p.tags.filter((t) => NUDGE_IDS.includes(t)))] : [],
     saveOnComplete: p.saveOnComplete !== false,
     generator: typeof p.generator === 'string' && GENERATOR_RE.test(p.generator) ? p.generator : null,
+    model: sanitizeModelTag(p.model),
     createdAt: Number.isFinite(p.createdAt) ? p.createdAt : null,
     data,
   };

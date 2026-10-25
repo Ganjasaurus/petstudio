@@ -5,8 +5,9 @@
  * AUTHORED GAME LOGIC, NOT MACHINE LEARNING. Everything in this file is
  * deterministic rules driven by a seeded PRNG. Temperament traits weight
  * hand-written utility scores and reactions; they never change by themselves.
- * Genuine on-device learning arrives later in a separate, replaceable module
- * and must never be inferred from anything in here.
+ * Genuine on-device learning lives in a separate, replaceable module
+ * (neural-engine.js) and must never be inferred from anything in here. Sleep
+ * Practice only asks this simulation for a held nap (startPracticeNap).
  *
  * Pure ES module: no DOM and no Three.js. Persistence goes through an injected
  * Storage-like object (window.localStorage in the browser, an in-memory fake
@@ -594,6 +595,8 @@ export class PetState {
      * is (used while customising, and by tests that isolate need decay).
      */
     this.autonomy = opts.autonomy !== false;
+    /** Sleep Practice holds the nap (not persisted: the practice runner re-applies it). */
+    this.sleepHold = false;
     this.reaction = null;
     this.lastCompleted = null;
     this.lastStation = r.lastStation;
@@ -827,6 +830,13 @@ export class PetState {
     }
     if (a.type === 'lesson') {
       if (a.elapsed >= a.duration) this._finishLesson();
+      return;
+    }
+    if (a.type === 'sleeping' && this.sleepHold) {
+      // Sleep Practice holds the nap: it lasts while the learning engine practises.
+      if (a.elapsed >= a.duration - 1) a.duration = Math.min(590, a.elapsed + 30);
+      if (a.elapsed < 560) return;
+      a.elapsed = Math.max(0, a.elapsed - 300); // a very long practice keeps napping within the saved bounds
       return;
     }
     const rule = ACTIVITY_RULES[a.type];
@@ -1154,9 +1164,37 @@ export class PetState {
 
   wake() {
     const n = this.appearance.name;
+    this.sleepHold = false;
     if (!this.isAsleep) return this._decline('wake', 'awake', `${n} is already awake.`, null, null);
     this._endActivity({ completed: this.needs.energy >= 95, interrupted: true, silent: true });
     return this._react('wake', { expression: 'sleepy', emote: 'stretch', message: `${n} stretches and wakes up.` });
+  }
+
+  /**
+   * Sleep Practice: the pet curls up in the Sleep Nook so its learning engine
+   * can practise. Unlike Rest it works when the pet is not sleepy and is
+   * never refused (a napping pet just settles in). The nap is held, so it
+   * does not end when the pet is rested, until releaseSleepHold() or wake().
+   */
+  startPracticeNap() {
+    const n = this.appearance.name;
+    this.sleepHold = true;
+    if (this.isAsleep) {
+      return this._react('practice', { expression: 'asleep', bubble: null, message: `${n} settles in to practise in its dreams.`, duration: 1.6 });
+    }
+    if (!(this.activity.type === 'walking' && this.activity.station === 'bed')) this._commandStation('bed', 'player');
+    return this._react('practice', { expression: 'sleepy', emote: 'stretch', bubble: 'sleep', message: `${n} heads to the Sleep Nook to practise in its dreams.` });
+  }
+
+  releaseSleepHold() {
+    const held = !!this.sleepHold;
+    this.sleepHold = false;
+    return held;
+  }
+
+  /** True while the pet is asleep or on its way to the Sleep Nook. */
+  get headingToBed() {
+    return this.activity.type === 'walking' && this.activity.station === 'bed';
   }
 
   pet() {

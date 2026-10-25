@@ -89,7 +89,7 @@ export class Customizer {
             ${Object.entries(TEMPERAMENT_PRESETS).map(([id, p]) => `<button type="button" class="chip" data-preset="${id}">${p.label}</button>`).join('')}
           </div>
           <div class="cz-traits">${TRAITS.map((t) => slider(`trait:${t}`, TRAIT_LABELS[t], 0, 100, 1, TRAIT_HINTS[t])).join('')}</div>
-          <p class="cz-note">Temperament steers the hand-written care and autonomy rules: what your pet chooses to do and how it reacts. It is not machine learning. Real learning arrives later with teaching and sleep practice.</p>
+          <p class="cz-note">Temperament steers the hand-written care and autonomy rules: what your pet chooses to do and how it reacts. It is not machine learning: real learning happens in Sleep Practice, where your pet's small networks train on what you teach it.</p>
         </section>
       </div>
       <div class="cz-foot">

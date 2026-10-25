@@ -23,6 +23,7 @@ function barStatus(s) {
       if (s.mode === 'replay') return music ? 'Performing it from the gallery…' : 'Redrawing it from the gallery…';
       if (s.mode === 'variation') return music ? 'Trying a new idea on the keys…' : 'Trying a new idea at the easel…';
       if (s.mode === 'starter') return music ? 'Playing a little tune of its own…' : 'Painting a doodle of its own…';
+      if (s.learned) return music ? 'Playing its take, shaped by practice…' : 'Drawing its take, shaped by practice…';
       return music ? 'Playing its own take…' : 'Drawing its own take…';
     case 'done': return s.loved ? 'Loved and saved to your Gallery.' : 'How was it? Love it, or guide the next try.';
     default: return '';
@@ -61,7 +62,7 @@ export class Hud {
     };
     const bar = this.el.bar;
     this.barEl = {
-      thumb: bar.querySelector('.cb-thumb'), name: bar.querySelector('.cb-name'), origin: bar.querySelector('.cb-origin'),
+      thumb: bar.querySelector('.cb-thumb'), name: bar.querySelector('.cb-name'), origin: bar.querySelector('.cb-origin'), learned: bar.querySelector('.cb-learned'),
       status: bar.querySelector('.cb-status'), fill: bar.querySelector('.cb-progress i'), love: bar.querySelector('[data-fb="love"]'),
       buttons: [...bar.querySelectorAll('[data-fb]')].filter((b) => b.dataset.fb !== 'dismiss'),
     };
@@ -332,7 +333,7 @@ export class Hud {
     }
     bar.hidden = false;
     const E = this.barEl;
-    const key = [state.phase, state.title, state.origin, state.loved, state.canFeedback, state.kind, state.mode, state.petName, state.ref].join('|');
+    const key = [state.phase, state.title, state.origin, state.loved, state.canFeedback, state.kind, state.mode, state.petName, state.ref, state.learned].join('|');
     if (key !== this.last.bar) {
       this.last.bar = key;
       bar.dataset.phase = state.phase;
@@ -340,6 +341,7 @@ export class Hud {
       E.name.textContent = state.title;
       E.origin.textContent = ORIGIN_LABELS[state.origin] ?? '';
       E.origin.dataset.origin = state.origin;
+      E.learned.hidden = !state.learned || state.phase === 'lesson';
       E.status.textContent = barStatus(state);
       for (const b of E.buttons) b.disabled = !state.canFeedback;
       E.love.disabled = !state.canFeedback || state.loved;

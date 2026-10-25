@@ -10,8 +10,9 @@
  *   - the pet's temperament (playful/calm shift energy, chaotic/neat shift order).
  * Same lesson + seed + style + temperament = same attempt. There are no
  * trainable parameters here: a learned controller replaces this class behind
- * the same compose(kind, source, opts) interface in a later iteration, and
- * outputs carry `generator` tags so the two can always be told apart.
+ * the same compose(kind, source, opts) interface (hybrid-engine.js blends in
+ * the trained networks from Iteration 3), and outputs carry `generator` tags
+ * so the two can always be told apart.
  */
 import { createRng, hashSeed } from './rng.js';
 import {
@@ -58,6 +59,12 @@ export function applyNudge(style, id, step = NUDGE_STEP) {
   if (!nudge) return s;
   s[nudge.axis] = roundTo(clamp(s[nudge.axis] + nudge.dir * step, -1, 1), 3);
   return s;
+}
+
+/** Which model made a creation: the learned network's steps and blend weight (null when authored). */
+export function sanitizeModelTag(m) {
+  if (!m || typeof m !== 'object' || !Number.isInteger(m.steps) || m.steps < 0) return null;
+  return { steps: Math.min(m.steps, 1e7), alpha: Number.isFinite(m.alpha) ? Math.round(clamp(m.alpha, 0, 1) * 1000) / 1000 : 0 };
 }
 
 /** Direction tags for a style, e.g. ['calmer', 'neater']. */
@@ -347,19 +354,19 @@ function flourish(rng, bbox, color, width) {
   ][rng.int(0, 3)];
   const [cx, cy] = [clamp(corner[0], 0.08, 0.92), clamp(corner[1], 0.08, 0.92)];
   const kind = rng.pick(['sparkle', 'dot', 'swoosh']);
-  if (kind === 'dot') return [{ color, width: width * 1.4, points: [[cx, cy]] }];
+  if (kind === 'dot') return [{ color, width: width * 1.4, points: [[cx, cy]], motif: 'flourish' }];
   if (kind === 'swoosh') {
     const pts = [];
     for (let i = 0; i <= 10; i++) {
       const u = i / 10;
       pts.push([cx - 0.05 + 0.1 * u, cy + Math.sin(u * Math.PI) * -0.025]);
     }
-    return [{ color, width: width * 0.8, points: pts }];
+    return [{ color, width: width * 0.8, points: pts, motif: 'flourish' }];
   }
   const r = 0.028;
   return [
-    { color, width: width * 0.7, points: [[cx - r, cy], [cx, cy], [cx + r, cy]] },
-    { color, width: width * 0.7, points: [[cx, cy - r], [cx, cy], [cx, cy + r]] },
+    { color, width: width * 0.7, points: [[cx - r, cy], [cx, cy], [cx + r, cy]], motif: 'flourish' },
+    { color, width: width * 0.7, points: [[cx, cy - r], [cx, cy], [cx, cy + r]], motif: 'flourish' },
   ];
 }
 
@@ -371,7 +378,7 @@ function signatureHeart(color) {
     const y = 13 * Math.cos(t) - 5 * Math.cos(2 * t) - 2 * Math.cos(3 * t) - Math.cos(4 * t);
     pts.push([0.915 + (x / 17) * 0.028, 0.915 - (y / 17) * 0.028]);
   }
-  return { color, width: 0.008, points: pts };
+  return { color, width: 0.008, points: pts, motif: 'signature' };
 }
 
 function fitToPaper(strokes, margin) {
@@ -408,25 +415,37 @@ function fitToPaper(strokes, margin) {
  * softer colours and thinner, smoother lines; livelier = bolder lines and
  * flourishes; neater = smoothed; wilder = wobblier, overshooting, sometimes
  * mirrored) and a tiny heart signature so attempts are recognisable at a glance.
+ *
+ * `neural` (optional, Iteration 3) blends in a learned stroke hand:
+ * { alpha, steadiness, strokes: [{ dx, dy, pressure, width, color, colorConf }] }
+ * from StrokePolicyNet. Each point moves (1 - alpha) by the authored wobble
+ * and alpha toward the network's reconstruction; pressure, width and colour
+ * blend the same way, and the learned steadiness damps the authored
+ * placement jitter (tilt, scale, shift). Random draws are identical with or
+ * without it, so alpha = 0 reproduces the authored attempt exactly.
  */
-export function composeDrawingAttempt(source, { seed = 1, style, traits, colors } = {}) {
+export function composeDrawingAttempt(source, { seed = 1, style, traits, colors, neural = null } = {}) {
   const src = sanitizeDrawing(source);
   const st = effectiveStyle(style, traits);
   const lively = Math.max(0, st.energy);
   const calm = Math.max(0, -st.energy);
   const wild = Math.max(0, st.order);
   const neat = Math.max(0, -st.order);
+  const a = neural && neural.alpha > 0 ? clamp(neural.alpha, 0, 1) : 0;
+  const learned = a > 0 && Array.isArray(neural.strokes) ? neural.strokes : [];
+  const steady = a > 0 ? clamp(num(neural.steadiness, 0), 0, 1) * a : 0;
   const rng = createRng(hashSeed(`attempt:draw:${seed >>> 0}:${fingerprint(src)}`));
   const palette = petPalette(colors, calm);
   const stats = drawingStats(src);
   const bb = stats.bbox ?? { minX: 0.35, minY: 0.35, maxX: 0.65, maxY: 0.65 };
   const cx = (bb.minX + bb.maxX) / 2;
   const cy = (bb.minY + bb.maxY) / 2;
-  const angle = rng.noise() * (0.05 + 0.2 * wild);
-  const scale = 1 + rng.noise() * (0.05 + 0.1 * wild) - 0.04 * calm;
-  const tx = rng.noise() * (0.025 + 0.045 * wild);
-  const ty = rng.noise() * (0.025 + 0.045 * wild);
-  const mirror = rng.chance(0.3 * wild);
+  const jitterScale = 1 - steady;
+  const angle = rng.noise() * (0.05 + 0.2 * wild) * jitterScale;
+  const scale = 1 + (rng.noise() * (0.05 + 0.1 * wild) - 0.04 * calm) * jitterScale;
+  const tx = rng.noise() * (0.025 + 0.045 * wild) * jitterScale;
+  const ty = rng.noise() * (0.025 + 0.045 * wild) * jitterScale;
+  const mirror = rng.chance(0.3 * wild) && steady < 0.5;
   const cos = Math.cos(angle);
   const sin = Math.sin(angle);
   const place = (x, y) => {
@@ -441,11 +460,12 @@ export function composeDrawingAttempt(source, { seed = 1, style, traits, colors 
   const maxDrops = src.strokes.length > 3 ? Math.floor(src.strokes.length * 0.2) : 0;
   let drops = 0;
   const out = [];
-  for (const s of src.strokes) {
+  src.strokes.forEach((s, si) => {
     if (drops < maxDrops && rng.chance(0.07 * wild)) {
       drops++;
-      continue;
+      return;
     }
+    const r = learned[si] && learned[si].dx?.length === s.points.length ? learned[si] : null;
     const len = strokeLength(s);
     const ph1 = rng.range(0, TAU);
     const ph2 = rng.range(0, TAU);
@@ -455,27 +475,39 @@ export function composeDrawingAttempt(source, { seed = 1, style, traits, colors 
     let pts = s.points.map((p, i, arr) => {
       if (i > 0) acc += Math.hypot(p[0] - arr[i - 1][0], p[1] - arr[i - 1][1]);
       const u = len > 0 ? acc / len : 0;
-      const a = arr[Math.max(0, i - 1)];
-      const b = arr[Math.min(arr.length - 1, i + 1)];
-      let nx = -(b[1] - a[1]);
-      let ny = b[0] - a[0];
+      const pa = arr[Math.max(0, i - 1)];
+      const pb = arr[Math.min(arr.length - 1, i + 1)];
+      let nx = -(pb[1] - pa[1]);
+      let ny = pb[0] - pa[0];
       const nl = Math.hypot(nx, ny) || 1;
       nx /= nl;
       ny /= nl;
       const w = wobble * (0.7 * Math.sin(ph1 + u * f1 * TAU) + 0.3 * Math.sin(ph2 + u * f2 * TAU)) * Math.min(1, len * 6);
-      const [x, y] = place(p[0] + nx * w + rng.noise() * jitter, p[1] + ny * w + rng.noise() * jitter);
-      const pressure = p.length > 2 ? clamp(p[2] * (1 + 0.2 * st.energy), 0.05, 1) : 0.55;
+      let ox = nx * w + rng.noise() * jitter;
+      let oy = ny * w + rng.noise() * jitter;
+      let pressure = p.length > 2 ? clamp(p[2] * (1 + 0.2 * st.energy), 0.05, 1) : 0.55;
+      if (r) {
+        ox = (1 - a) * ox + a * r.dx[i];
+        oy = (1 - a) * oy + a * r.dy[i];
+        pressure = clamp((1 - a) * pressure + a * r.pressure[i], 0.05, 1);
+      }
+      const [x, y] = place(p[0] + ox, p[1] + oy);
       return [x, y, pressure, 0];
     });
-    if (neat > 0.2 || calm > 0.4) pts = smoothPoints(pts, Math.max(neat, calm * 0.6));
-    if (wild > 0.3 && rng.chance(0.5 * wild)) pts = overshoot(pts, 0.03 * wild);
-    const base = rng.chance(keepColor) ? s.color : rng.pick(palette);
+    if (neat > 0.2 || calm > 0.4) pts = smoothPoints(pts, Math.max(neat, calm * 0.6) * (1 - a));
+    if (wild > 0.3 && rng.chance(0.5 * wild)) pts = overshoot(pts, 0.03 * wild * (1 - a));
+    let base = rng.chance(keepColor) ? s.color : rng.pick(palette);
+    let width = clamp(s.width * (1 + 0.3 * st.energy) * rng.range(0.9, 1.1), 0.005, 0.07);
+    if (r) {
+      if (r.color && ((hashSeed(`${seed >>> 0}:color:${si}`) % 1000) / 1000) < a * clamp(num(r.colorConf, 0), 0, 1)) base = r.color;
+      width = clamp((1 - a) * width + a * num(r.width, width), 0.005, 0.07);
+    }
     out.push({
       color: calm > 0.3 ? mixHex(base, '#ffffff', 0.14 * calm) : base,
-      width: clamp(s.width * (1 + 0.3 * st.energy) * rng.range(0.9, 1.1), 0.005, 0.07),
+      width,
       points: pts,
     });
-  }
+  });
   const accent = palette[0] ?? '#ff7fa3';
   if (lively > 0.15) {
     const count = 1 + Math.round(lively * 3 * rng.next());

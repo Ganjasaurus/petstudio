@@ -16,7 +16,7 @@
  * drawing and the item just added are never evicted. Pure ES module.
  */
 import { sanitizePhrase, sanitizeDrawing, phraseIsEmpty, drawingIsEmpty } from './teaching-core.js';
-import { sanitizeStyle, NUDGE_IDS } from './creative-engine.js';
+import { sanitizeStyle, sanitizeModelTag, NUDGE_IDS } from './creative-engine.js';
 import { loadVersioned, saveVersioned, removeKeys } from './persist.js';
 import { sanitizeText } from './teaching-memory.js';
 
@@ -64,6 +64,7 @@ export function sanitizeItem(it) {
     seed: Number.isInteger(it.seed) ? it.seed >>> 0 : null,
     generator: typeof it.generator === 'string' && GENERATOR_RE.test(it.generator) ? it.generator : null,
     style: it.style ? sanitizeStyle(it.style) : null,
+    model: sanitizeModelTag(it.model),
     feedback: {
       reward: Number.isFinite(fb.reward) ? clamp(fb.reward, -1, 1) : 0,
       loves: Number.isInteger(fb.loves) && fb.loves >= 0 ? Math.min(fb.loves, 1e6) : 0,

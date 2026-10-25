@@ -21,6 +21,13 @@ const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&
 const nowS = () => performance.now() / 1000;
 const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
 
+/** "Learned" badge for creations shaped by the trained networks (generator neural-v1). */
+function learnedBadge(it) {
+  if (it.generator !== 'neural-v1') return '';
+  const detail = it.model ? `: ${it.model.steps} training steps, blend ${Math.round(it.model.alpha * 100)}%` : '';
+  return `<span class="gl-learned" title="Shaped by the networks it trained in Sleep Practice${detail}">Learned</span>`;
+}
+
 export function relativeTime(ts, now = Date.now()) {
   const s = Math.max(0, (now - ts) / 1000);
   if (s < 45) return 'just now';
@@ -188,7 +195,7 @@ export class GalleryView {
         </div>
         <div class="gl-meta">
           <h3 class="gl-title">${esc(it.title)}</h3>
-          <div class="gl-badges"><span class="gl-origin" data-origin="${it.origin}">${ORIGIN_LABELS[it.origin]}</span><span class="gl-kind">${KIND_LABELS[it.kind]}</span>${tags}</div>
+          <div class="gl-badges"><span class="gl-origin" data-origin="${it.origin}">${ORIGIN_LABELS[it.origin]}</span>${learnedBadge(it)}<span class="gl-kind">${KIND_LABELS[it.kind]}</span>${tags}</div>
           <time datetime="${new Date(it.createdAt).toISOString()}">${relativeTime(it.createdAt)}</time>
         </div>
         <div class="gl-actions">
@@ -345,7 +352,7 @@ export class GalleryView {
         <canvas aria-label="${esc(it.title)}"></canvas>
         <figcaption>
           <strong>${esc(it.title)}</strong>
-          <span class="gl-badges"><span class="gl-origin" data-origin="${it.origin}">${ORIGIN_LABELS[it.origin]}</span>${it.tags.map((t) => `<span class="gl-tag">${NUDGES[t]?.label ?? t}</span>`).join('')}</span>
+          <span class="gl-badges"><span class="gl-origin" data-origin="${it.origin}">${ORIGIN_LABELS[it.origin]}</span>${learnedBadge(it)}${it.tags.map((t) => `<span class="gl-tag">${NUDGES[t]?.label ?? t}</span>`).join('')}</span>
           <time datetime="${new Date(it.createdAt).toISOString()}">${relativeTime(it.createdAt)}</time>
         </figcaption>
         ${it.kind === 'music' ? `<button type="button" class="btn" data-gl="play-${key}">${useIcon('i-play')}<span>Play</span></button>` : ''}
@@ -487,7 +494,7 @@ export class GalleryView {
 
 /**
  * Creates the gallery view and plugs it into the feature registry, replacing
- * the Iteration 1 placeholder: features.register('gallery', { open }).
+ * the placeholder hook: features.register('gallery', { open }).
  */
 export function installGallery(app, { reducedMotion = false } = {}) {
   const view = new GalleryView({

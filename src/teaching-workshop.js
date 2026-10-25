@@ -96,7 +96,9 @@ export class TeachingWorkshop {
 
   // ----- DOM -------------------------------------------------------------------
   _build() {
-    const chips = (list, attr) => list.map((t) => `<button type="button" class="chip ws-chip" data-${attr}="${t.id}">${t.name}</button>`).join('');
+    // Phones show short chip names (e.g. "Sun") so all five shapes fit on one row without clipping.
+    const SHORT = { sun: 'Sun', 'sunny-arp': 'Sunny', 'bouncy-walk': 'Bouncy', 'starlight-lullaby': 'Lullaby', 'playful-hop': 'Playful' };
+    const chips = (list, attr) => list.map((t) => `<button type="button" class="chip ws-chip" data-${attr}="${t.id}" aria-label="${t.name}">${SHORT[t.id] ? `<span class="chip-long">${t.name}</span><span class="chip-short">${SHORT[t.id]}</span>` : t.name}</button>`).join('');
     this.dialog.innerHTML = `
       <div class="ws-head">
         <h2 id="ws-title" tabindex="-1">Teach <span data-ws-name></span></h2>
@@ -155,9 +157,10 @@ export class TeachingWorkshop {
             </div>
           </div>
         </section>
-        <p class="ws-note">Your pet keeps each lesson in its teaching memory and riffs on it with hand-written rules, so its attempt is its own take, not a copy. Genuine on-device learning arrives later with Sleep Practice.</p>
+        <p class="ws-note">Each lesson goes into your pet's teaching memory, and its first attempts riff on it with hand-written rules. In Sleep Practice its two small neural networks train on your lessons, so later attempts can move closer to what you taught.</p>
       </div>
       <div class="ws-foot">
+        <p class="ws-note-compact">Kept in teaching memory · Sleep Practice trains on it</p>
         <p class="ws-hint" aria-live="polite"></p>
         <button type="button" class="btn primary ws-teach" data-ws="teach">${useIcon('i-teach')}<span>Teach Pet</span></button>
       </div>`;
@@ -212,6 +215,13 @@ export class TeachingWorkshop {
     this._wireCanvas();
     d.addEventListener('keydown', (e) => this._onKey(e, true));
     d.addEventListener('keyup', (e) => this._onKey(e, false));
+    this.el.body.addEventListener('scroll', () => this._fade(), { passive: true });
+  }
+
+  /** Fades the bottom edge of the body while more content waits below, so nothing looks sliced. */
+  _fade() {
+    const b = this.el.body;
+    b.classList.toggle('more-below', b.scrollHeight - b.scrollTop - b.clientHeight > 4);
   }
 
   _command(cmd) {
@@ -885,6 +895,7 @@ export class TeachingWorkshop {
 
   _resize() {
     if (!this.dialog.open) return;
+    requestAnimationFrame(() => this._fade());
     if (this.tab === 'music') {
       const w = this.el.keys.clientWidth;
       const wantSplit = this.chromatic && w > 0 && w < 560;
@@ -1022,7 +1033,7 @@ export class TeachingWorkshop {
 
 /**
  * Creates the workshop and plugs it into the feature registry, replacing the
- * Iteration 1 placeholder: features.register('teach', { open }).
+ * placeholder hook: features.register('teach', { open }).
  */
 export function installTeachingWorkshop(app, { reducedMotion = false } = {}) {
   const ws = new TeachingWorkshop({

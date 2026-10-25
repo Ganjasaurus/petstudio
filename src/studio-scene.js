@@ -871,8 +871,9 @@ export class CameraRig {
         return { id, target: new THREE.Vector3((c.x + a.x) / 2, 0.98, (c.z + a.z) / 2), yaw: deg(52), pitch: deg(15), radius: 1.38 };
       }
       case 'sleep': {
+        // Centred a little above the cushion so a pet curled up in it (ears and all) stays in frame.
         const c = STATIONS.bed.center;
-        return { id, target: new THREE.Vector3(c.x + 0.2, 0.5, c.z + 0.3), yaw: deg(44), pitch: deg(33), radius: 1.45 };
+        return { id, target: new THREE.Vector3(c.x + 0.2, 0.78, c.z + 0.3), yaw: deg(44), pitch: deg(33), radius: 1.62 };
       }
       case 'wall':
         // The gallery frame on the left wall (faces +x), seen from inside the room.
@@ -1130,7 +1131,8 @@ export class StudioScene {
     this.rig.onTap = (x, y) => this.onPick?.(this.pick(x, y), { x, y });
     this.rig.onHover = (x, y) => this._hover(x, y);
     this.raycaster = new THREE.Raycaster();
-    this.timers = { zzz: 0, bubble: 0, crumb: 0 };
+    this.timers = { zzz: 0, bubble: 0, crumb: 0, dream: 0 };
+    this.dreamSeq = 0;
     this.time = 0;
     this.pet = null;
     this.onPick = null;
@@ -1166,8 +1168,13 @@ export class StudioScene {
   }
 
   resize(width, height, safe, pixelRatio = 1) {
-    this.renderer.setPixelRatio(pixelRatio);
-    this.renderer.setSize(width, height, false);
+    // Re-assigning a canvas size clears it even when nothing changed, so only touch it on a real change.
+    const size = `${width}x${height}@${pixelRatio}`;
+    if (size !== this._size) {
+      this._size = size;
+      this.renderer.setPixelRatio(pixelRatio);
+      this.renderer.setSize(width, height, false);
+    }
     this.rig.setViewport(width, height, safe);
   }
 
@@ -1317,7 +1324,7 @@ export class StudioScene {
   /**
    * Per-frame update.
    * @param {number} dt
-   * @param {{activity: string, petHead?: THREE.Vector3, petFocus?: THREE.Vector3}} frame
+   * @param {{activity: string, petHead?: THREE.Vector3, petFocus?: THREE.Vector3, dream?: 'music'|'drawing'|null}} frame
    */
   update(dt, frame) {
     this.time += dt;
@@ -1346,6 +1353,13 @@ export class StudioScene {
     if (act === 'sleeping' && frame.petHead && t.zzz <= 0) {
       this.particles.emit('zzz', this._v.copy(frame.petHead).add(this._v2.set(0.15, 0.12, 0.05)));
       t.zzz = 1.5;
+    }
+    // Sleep Practice: little dream notes (music) or sparkles (drawing) drift up while it trains.
+    if (act === 'sleeping' && frame.dream && frame.petHead && t.dream <= 0) {
+      const tints = ['#b9a6ff', '#ffb3d1', '#9fd6ff', '#ffd98a'];
+      this.dreamSeq += 1;
+      this.particles.emit(frame.dream === 'drawing' ? 'dreamStar' : 'dreamNote', this._v.copy(frame.petHead).add(this._v2.set(-0.12, 0.2, 0.08)), { tint: tints[this.dreamSeq % tints.length] });
+      t.dream = 0.65;
     }
     if (act === 'bathing' && t.bubble <= 0) {
       this.particles.emit('bubble', s.bath.waterPoint(this._v));
