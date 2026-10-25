@@ -458,7 +458,7 @@ export class PetModel {
       pos: new THREE.Vector3(), goal: new THREE.Vector3(),
       headYaw: 0, headPitch: 0, headRoll: 0, glanceTimer: 0, glance: { cam: true, yaw: 0, pitch: 0 },
       ear: 0, earVel: 0, prevLift: 0, press: [0, 0], emote: null,
-      w: { walk: 0, sleep: 0, sit: 0, play: 0, draw: 0, eat: 0, bath: 0, listen: 0 },
+      w: { walk: 0, sleep: 0, sit: 0, play: 0, draw: 0, eat: 0, bath: 0, listen: 0, attend: 0 },
       arms: [{ x: 0.05, z: 0.3 }, { x: 0.05, z: -0.3 }],
     };
     this._v1 = new THREE.Vector3();
@@ -717,7 +717,7 @@ export class PetModel {
     const bouncy = ['hop', 'jump', 'spin'].includes(n);
     if (w.sleep > 0.5 && n !== 'stretch') n = null;
     else if ((w.bath > 0.5 || w.sit > 0.5) && bouncy) n = 'wiggle';
-    else if ((w.play > 0.5 || w.draw > 0.5 || w.eat > 0.5) && bouncy) n = 'nod';
+    else if ((w.play > 0.5 || w.draw > 0.5 || w.eat > 0.5 || w.attend > 0.5) && bouncy) n = 'nod';
     if (n && this.reducedMotion && (n === 'spin' || n === 'jump')) n = 'hop';
     if (!n) return;
     const dur = { hop: 0.45, jump: 0.7, spin: 0.95, wiggle: 0.8, shake: 0.75, nod: 0.6, stretch: 1.1 }[n] ?? 0.6;
@@ -789,6 +789,7 @@ export class PetModel {
       a.glance = { cam: Math.random() < camChance, yaw: (Math.random() - 0.5) * 1.5, pitch: (Math.random() - 0.5) * 0.35 };
       a.glanceTimer = 1.4 + Math.random() * 2.6;
     }
+    if (act === 'lesson' && ctx.cameraPosition) return ctx.cameraPosition; // attending to you, the teacher
     if (act === 'drawing' && ctx.penTarget && !a.glance.cam) return ctx.penTarget;
     if (act === 'playing_music' && ctx.keyTargets && !a.glance.cam) return ctx.keyTargets[0] ?? null;
     if (a.glance.cam && ctx.cameraPosition && act !== 'walking' && act !== 'eating') return ctx.cameraPosition;
@@ -834,7 +835,7 @@ export class PetModel {
       a.hopY = 0;
     }
     let heading = view.heading;
-    if (act === 'idle' && ctx.cameraPosition) {
+    if ((act === 'idle' || act === 'lesson') && ctx.cameraPosition) {
       heading = Math.atan2(ctx.cameraPosition.x - a.pos.x, ctx.cameraPosition.z - a.pos.z); // turns to look at you
     }
     a.heading = dampAngle(a.heading, heading, act === 'walking' || a.hop ? 10 : 3.5, dt);
@@ -854,6 +855,7 @@ export class PetModel {
     blend('play', act === 'playing_music');
     blend('draw', act === 'drawing');
     blend('eat', act === 'eating');
+    blend('attend', act === 'lesson');
 
     const st = {
       lift: 0, rotX: 0, rotY: 0, rotZ: 0, sx: 1, sy: 1, sz: 1, headYaw: 0, headPitch: 0, headRoll: 0,
@@ -954,6 +956,19 @@ export class PetModel {
       st.arms[0] = { x: lerp(st.arms[0].x, -2.3 + Math.sin(a.t * 9) * 0.25, splash), z: lerp(st.arms[0].z, 0.5, splash) };
       st.arms[1] = { x: lerp(st.arms[1].x, -2.3 + Math.sin(a.t * 9 + 1) * 0.25, splash), z: lerp(st.arms[1].z, -0.5, splash) };
     }
+    // Attending a lesson: head tilted, ears perked, leaning in with paws together, bobbing to the beat.
+    if (W.attend > 0.001) {
+      const w = W.attend;
+      const beat = ctx.listenBeat ?? a.t * 1.1;
+      st.headRoll += (0.24 + Math.sin(a.t * 1.3) * 0.06) * w;
+      st.rotX += 0.06 * w;
+      st.lift += Math.abs(Math.sin(beat * Math.PI)) * 0.025 * w;
+      st.rotZ += Math.sin(beat * Math.PI) * 0.03 * w;
+      earDroop -= 0.45 * w;
+      st.arms[0] = { x: lerp(st.arms[0].x, -0.62, w), z: lerp(st.arms[0].z, 0.08, w) };
+      st.arms[1] = { x: lerp(st.arms[1].x, -0.62, w), z: lerp(st.arms[1].z, -0.08, w) };
+      tailSpeed += 2.5 * w;
+    }
     // Eating: head dips to the bowl while munching.
     if (W.eat > 0.001) {
       const chew = Math.max(0, Math.sin(a.t * 8));
@@ -1041,6 +1056,33 @@ export class PetModel {
     this.headGroup.getWorldPosition(target);
     target.y += HEAD_R * 0.8 * this.dims.hs;
     return target;
+  }
+
+  /**
+   * World points on the pet's visible outline as seen from `camera`: the
+   * head and body edges along the camera's right axis, the ear tips and the
+   * feet. Their screen bounds approximate the silhouette far better than the
+   * corners of a 3D box, which perspective inflates in close-ups.
+   */
+  getSilhouettePoints(camera) {
+    const right = this._v1.setFromMatrixColumn(camera.matrixWorld, 0).normalize().clone();
+    const p = this.root.position;
+    const { bs, hs } = this.dims;
+    const head = this.headGroup.getWorldPosition(new THREE.Vector3());
+    const headR = HEAD_R * hs * 1.06;
+    const body = new THREE.Vector3(p.x, p.y + this.pose.position.y + BODY_CY * bs, p.z);
+    const bodyR = BODY_R * bs * 1.1;
+    const feet = new THREE.Vector3(p.x, p.y, p.z);
+    return [
+      head.clone().addScaledVector(right, headR),
+      head.clone().addScaledVector(right, -headR),
+      head.clone().setY(head.y + HEAD_R * 0.94 * hs + this.earLift * hs),
+      body.clone().addScaledVector(right, bodyR),
+      body.clone().addScaledVector(right, -bodyR),
+      feet.clone().addScaledVector(right, 0.26 * bs),
+      feet.clone().addScaledVector(right, -0.26 * bs),
+      feet,
+    ];
   }
 
   /** Approximate world-space bounding box of the pet (for framing and layout checks). */

@@ -1,42 +1,52 @@
 /**
- * main.js: composition root for Pet Studio (Iteration 1).
+ * main.js: composition root for Pet Studio (Iteration 2).
  *
  * Wires the deterministic pet simulation (pet-state.js) to the 3D studio
  * (studio-scene.js + pet-model.js), audio (audio.js) and the DOM UI
- * (hud.js + customizer.js); persists to localStorage; and exposes
+ * (hud.js, customizer.js, teaching-workshop.js, gallery.js); connects the
+ * teaching loop (creation-flow.js) to the teaching memory and the creation
+ * gallery; persists everything to localStorage; and exposes
  * window.__PET_STUDIO__ for automated multi-device inspection.
  *
- * Learning boundary: nothing in Iteration 1 learns. Care, autonomy and the
- * starter songs and drawings are authored, deterministic rules. Hooks for the
- * Teaching Workshop, Gallery, Sleep Practice and Inspector are registered as
- * placeholders so later iterations can plug in without rewriting the UI.
+ * Learning boundary: nothing in Iteration 2 learns. Care, autonomy, the
+ * starter repertoire and the pet's attempts at your lessons are authored,
+ * deterministic rules (the attempts come from a seeded variation engine fed
+ * by the teaching memory). Sleep Practice and the Inspector remain
+ * placeholders for the genuine on-device learning of Iteration 3.
  */
 import * as THREE from 'three';
 import { PetState, loadPet, savePet, clearSavedPet, randomAppearance, randomTraits, hashSeed, SCHEMA_VERSION } from './pet-state.js';
 import { StudioScene, CAMERA_VIEWS } from './studio-scene.js';
 import { PetModel } from './pet-model.js';
-import { generateStarterDrawing, generateStarterPhrase, STARTER_DRAWING_GENERATOR } from './starter-repertoire.js';
+import { generateStarterPhrase } from './starter-repertoire.js';
 import { createRng } from './rng.js';
 import { StudioAudio } from './audio.js';
 import { Hud } from './hud.js';
 import { Customizer } from './customizer.js';
+import { noteColor, drumByMidi } from './teaching-core.js';
+import { ENGINE_INFO, NUDGES } from './creative-engine.js';
+import { CreationFlow } from './creation-flow.js';
+import { loadTeachingMemory, saveTeachingMemory, clearTeachingMemory, TEACH_VERSION } from './teaching-memory.js';
+import { loadGallery, saveGallery, clearGallery, GALLERY_LIMITS, GALLERY_VERSION } from './gallery-store.js';
+import { installTeachingWorkshop } from './teaching-workshop.js';
+import { installGallery } from './gallery.js';
 
 /* global __PETSTUDIO_BUILD__ */
 const BUILD = typeof __PETSTUDIO_BUILD__ !== 'undefined' ? __PETSTUDIO_BUILD__ : { version: 'dev', mode: 'unbundled', builtAt: null };
 const params = new URLSearchParams(window.location.search);
 const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
 const coarsePointer = window.matchMedia?.('(pointer: coarse)').matches ?? false;
+const WORKSHOP_DRAFT_KEY = 'petstudio.workshop.v1';
 
-/** Pastel note colours by pitch class (C D E G A of the pentatonic scale). */
-const NOTE_TINTS = { 0: '#ff8fa3', 2: '#ffb35c', 4: '#ffd84d', 5: '#9be08f', 7: '#7fd8c8', 9: '#8fc8ff', 11: '#c3a6ff' };
 const REACTION_ICON = {
   feed: 'i-feed', wash: 'i-wash', sleep: 'i-rest', wake: 'i-wake', pet: 'i-bond', praise: 'i-praise',
-  music: 'i-music', draw: 'i-draw', listen: 'i-listen', complete: 'i-praise',
+  music: 'i-music', draw: 'i-draw', listen: 'i-listen', complete: 'i-praise', lesson: 'i-teach', love: 'i-bond',
 };
 const REACTION_SOUND = {
   feed: 'feed', wash: 'wash', sleep: 'sleep', wake: 'wake', pet: 'pet', praise: 'praise',
-  music: 'go', draw: 'go', listen: 'go', complete: 'complete',
+  music: 'go', draw: 'go', listen: 'go', complete: 'complete', lesson: 'lesson', love: 'love',
 };
+const STATION_VIEW = { music: 'music', drawing: 'easel' };
 const LOW_NEED_HINT = {
   hunger: ['looks a little peckish.', 'i-hunger'],
   energy: ['is getting sleepy.', 'i-energy'],
@@ -53,15 +63,19 @@ const STATION_TIP = {
   rug: 'Cozy Rug: tap to sit and listen',
 };
 
-/** Placeholders for later iterations. Real implementations call features.register(id, { open }). */
+/**
+ * Feature hooks. Teach and Gallery are replaced by their real implementations
+ * at boot (features.register in teaching-workshop.js and gallery.js); the
+ * Iteration 3 hooks stay placeholders.
+ */
 const FEATURE_PLACEHOLDERS = [
   {
     id: 'teach', label: 'Teaching Workshop', short: 'Teach', icon: 'teach', iteration: 2,
-    description: 'Play notes on a little keyboard and draw strokes on a touch canvas to show your pet ideas. Save, retry, correct and compare its attempts.',
+    description: 'Play notes and rhythms or draw strokes to show your pet an idea. It listens, then performs its own take.',
   },
   {
     id: 'gallery', label: 'Creation Gallery', short: 'Gallery', icon: 'gallery', iteration: 2,
-    description: 'Replay saved songs and drawings, delete ones you no longer want, and compare early and later attempts.',
+    description: 'Replay saved songs and drawings, hang one on the wall, and compare your lessons with your pet\'s attempts.',
   },
   {
     id: 'practice', label: 'Sleep Practice', short: 'Practice', icon: 'practice', iteration: 3,
@@ -139,7 +153,10 @@ class App {
     this.audio = new StudioAudio({ storage: this.storage });
     if (params.get('mute') === '1') this.audio.setMuted(true);
     this.features = new FeatureRegistry(FEATURE_PLACEHOLDERS);
-    this.session = { drawing: null, music: null, listen: null, keyTargets: [null, null] };
+    this.session = { drawing: null, music: null, listen: null, lesson: null, keyTargets: [null, null] };
+    this.flowCam = null; // camera follows a teaching flow until the player picks a view
+    this.sheet = null; // which of the workshop / gallery sheets is open
+    this.storesDirty = false;
     this.dirty = false;
     this.lastSave = 0;
     this.lastHud = 0;
@@ -155,7 +172,7 @@ class App {
   }
 
   boot() {
-    if (params.get('reset') === '1') clearSavedPet(this.storage);
+    if (params.get('reset') === '1') this.clearAllSaves();
     const now = Date.now();
     const loaded = loadPet(this.storage, { now });
     this.loadStatus = loaded.status;
@@ -169,6 +186,22 @@ class App {
       this.pet = PetState.create({ appearance: randomAppearance(rand), traits: randomTraits(rand), seed, now });
       firstRun = true;
     }
+
+    // Teaching memory (per pet) and the creation gallery, then the teaching loop.
+    // The flow subscribes to the simulation before the presentation does, so it
+    // has decided what is being performed by the time a session begins.
+    const mem = loadTeachingMemory(this.storage, { petId: this.pet.id });
+    const gal = loadGallery(this.storage);
+    this.memory = mem.memory;
+    this.gallery = gal.gallery;
+    this.storeStatus = { memory: mem.status, gallery: gal.status };
+    this.flow = new CreationFlow({ pet: this.pet, memory: this.memory, gallery: this.gallery });
+    this.flow.on((e) => this.onFlowEvent(e));
+    this.memory.onChange(() => this.scheduleStoreSave());
+    this.gallery.onChange((what) => {
+      this.scheduleStoreSave();
+      if (what !== 'feedback' && what !== 'favorite') this.refreshWallArt();
+    });
     this.pet.on((e) => this.onSimEvent(e));
 
     this.hud = new Hud({
@@ -179,6 +212,7 @@ class App {
       onMute: () => this.toggleMute(),
       onCustomize: () => this.openCustomizer(),
       onFeature: (id) => this.openFeature(id),
+      onFeedback: (kind) => this.feedback(kind),
     });
     this.features.onChange(() => this.hud.setFeatures(this.features.list()));
     this.customizer = new Customizer({
@@ -198,7 +232,10 @@ class App {
       this.model = null;
       document.getElementById('gl-error').hidden = false;
     }
+    this.workshop = installTeachingWorkshop(this, { reducedMotion });
+    this.galleryView = installGallery(this, { reducedMotion });
     this.restoreCreativeState();
+    this.refreshWallArt();
 
     this.hud.setMuted(this.audio.muted);
     const view = params.get('view');
@@ -211,6 +248,9 @@ class App {
       this.hud.toast('The last save was damaged, so the previous good save was restored.', { tone: 'warn', icon: 'i-praise', duration: 5000 });
     } else if (loaded.status === 'future-version') {
       this.hud.toast('A save from a newer version was kept safe. Starting a fresh pet here.', { tone: 'warn', duration: 5000 });
+    }
+    if (Object.values(this.storeStatus).includes('restored-backup')) {
+      this.hud.toast('Some lessons or creations were damaged, so their last good copy was restored.', { tone: 'warn', icon: 'i-gallery', duration: 5000 });
     }
     if (this.memoryOnly) this.hud.toast('This browser blocks storage, so progress will not be saved.', { tone: 'warn', duration: 5000 });
     if (loaded.away) this.hud.toast(loaded.away.text, { icon: 'i-wake', duration: 5200 });
@@ -229,38 +269,33 @@ class App {
   restoreCreativeState() {
     const rec = this.pet.currentDrawing;
     if (this.studio && rec) {
-      const drawing = this.drawingFor(rec);
-      this.studio.showDrawing(drawing, rec.progress);
-      if (rec.complete) this.studio.showCreation();
-      if (this.pet.activity.type === 'drawing' && this.pet.activity.seed === rec.seed) this.session.drawing = drawing;
+      const drawing = this.flow.drawingFor(rec);
+      if (drawing) this.studio.showDrawing(drawing, rec.progress);
+      if (drawing && this.pet.activity.type === 'drawing' && this.pet.activity.seed === rec.seed) this.session.drawing = drawing;
     }
     const a = this.pet.activity;
     if (a.type === 'playing_music' || a.type === 'listening') this.beginSession(a.type, a.seed);
   }
 
-  drawingFor(rec) {
-    const style = rec.style ?? { traits: this.pet.traits, colors: this.pet.appearance };
-    return generateStarterDrawing({ seed: rec.seed, traits: style.traits, colors: style.colors });
-  }
-
+  /** What the studio renders comes from the creation flow: a planned piece or a starter one. */
   beginSession(type, seed) {
     const s = this.session;
     if (type === 'drawing' && this.pet.currentDrawing) {
       const rec = this.pet.currentDrawing;
-      if (!rec.style) {
-        const { bodyColor, accentColor, cheekColor } = this.pet.appearance;
-        rec.style = { generator: STARTER_DRAWING_GENERATOR, traits: { ...this.pet.traits }, colors: { bodyColor, accentColor, cheekColor } };
-      }
-      s.drawing = this.drawingFor(rec);
-      this.studio?.showDrawing(s.drawing, rec.progress);
+      s.drawing = this.flow.drawingFor(rec);
+      if (s.drawing) this.studio?.showDrawing(s.drawing, rec.progress);
     } else if (type === 'playing_music') {
-      s.music = { phrase: generateStarterPhrase({ seed, traits: this.pet.traits }), cursor: 0 };
+      s.music = { phrase: this.flow.phraseFor(this.pet.activity), cursor: 0, hitCursor: 0, lead: 0.5 };
       if (this.studio) {
         const m = this.studio.stations.music;
         s.keyTargets = [m.keyWorld(67), m.keyWorld(76)];
       }
     } else if (type === 'listening') {
-      s.listen = { phrase: generateStarterPhrase({ seed, mode: 'lullaby' }), cursor: 0 };
+      s.listen = { phrase: generateStarterPhrase({ seed, mode: 'lullaby' }), cursor: 0, hitCursor: 0 };
+    } else if (type === 'lesson') {
+      // The demonstrated tune plays once from the speakers while the pet listens.
+      const lesson = this.flow.lessonData();
+      s.lesson = lesson?.kind === 'music' ? { phrase: lesson.data, cursor: 0, hitCursor: 0, once: true, lead: 0.4 } : null;
     }
   }
 
@@ -270,6 +305,10 @@ class App {
       case 'reaction': this.onReaction(e); break;
       case 'activity':
         this.beginSession(e.to, e.seed);
+        // A teaching flow shows the performance: switch to the station once the pet starts.
+        if (this.flowCam && e.plan?.ref === this.flowCam.ref && STATION_VIEW[e.plan.kind] && (e.to === 'playing_music' || e.to === 'drawing')) {
+          this.setView(STATION_VIEW[e.plan.kind], { auto: true });
+        }
         this.hudDirty = true;
         this.markDirty();
         break;
@@ -279,11 +318,20 @@ class App {
     }
   }
 
+  /** Teaching-loop events: wall art follows new drawings; stores save; the HUD updates. */
+  onFlowEvent(e) {
+    if (e.type === 'creation') {
+      if (e.item?.kind === 'drawing') this.refreshWallArt();
+      this.scheduleStoreSave(0);
+    }
+    this.hudDirty = true;
+  }
+
   onReaction(e) {
     this.model?.playEmote(e.emote);
     if (e.ok && this.studio && this.model) {
       const head = this.model.getHeadWorldPosition(this.tmp.head);
-      if (e.kind === 'pet') this.studio.emit('heart', head, { count: e.expression === 'asleep' ? 2 : 5 });
+      if (e.kind === 'pet' || e.kind === 'love') this.studio.emit('heart', head, { count: e.expression === 'asleep' ? 2 : e.kind === 'love' ? 7 : 5 });
       if (e.kind === 'praise' || (e.kind === 'complete' && e.expression === 'proud')) this.studio.emit('sparkle', head, { count: 10 });
     }
     if (e.message) this.hud.toast(e.message, { tone: e.ok ? 'good' : 'warn', icon: REACTION_ICON[e.kind] ?? 'i-curiosity' });
@@ -298,13 +346,15 @@ class App {
     if (e.activity === 'drawing') {
       if (e.completed && this.studio) {
         this.studio.setDrawingProgress(1);
-        this.studio.showCreation();
+        this.refreshWallArt();
       }
       this.session.drawing = null;
     } else if (e.activity === 'playing_music') {
       this.session.music = null;
     } else if (e.activity === 'listening') {
       this.session.listen = null;
+    } else if (e.activity === 'lesson') {
+      this.session.lesson = null;
     }
     this.markDirty();
   }
@@ -347,6 +397,10 @@ class App {
       this.action('pet');
       return;
     }
+    if (hit.id === 'frame') {
+      this.openFeature('gallery');
+      return;
+    }
     const station = hit.id.replace('station:', '');
     const map = { food: 'feed', bath: 'wash', bed: this.pet.isAsleep ? 'wake' : 'sleep', music: 'music', easel: 'draw', rug: 'listen' };
     if (map[station]) this.action(map[station]);
@@ -357,12 +411,17 @@ class App {
       this.hud.hideTip();
       return;
     }
-    const text = hit.id === 'pet' ? `${this.pet.name}: tap to pet` : STATION_TIP[hit.id.replace('station:', '')];
+    let text;
+    if (hit.id === 'pet') text = `${this.pet.name}: tap to pet`;
+    else if (hit.id === 'frame') text = this.studio?.wallArt.pinned ? `"${this.studio.wallArt.title}": tap to open the Gallery` : 'Gallery wall: tap to open the Gallery';
+    else text = STATION_TIP[hit.id.replace('station:', '')];
     this.hud.showTip(text, at.x, at.y);
   }
 
-  setView(id, opts) {
-    if (this.studio && !this.studio.setView(id, opts)) return;
+  /** `auto` = chosen by a teaching flow; a view the player picks takes the camera back. */
+  setView(id, { auto = false, instant = false } = {}) {
+    if (!auto) this.flowCam = null;
+    if (this.studio && !this.studio.setView(id, { instant })) return;
     this.hud.setView(id);
   }
 
@@ -374,9 +433,162 @@ class App {
   }
 
   openFeature(id) {
+    if (this.customizer?.isOpen || this.workshop?.isOpen || this.galleryView?.isOpen) return;
+    this.audio.unlock();
     const f = this.features.get(id);
     if (f?.available) f.open(this.api);
     else this.hud.openNext(id);
+  }
+
+  // ----- teaching loop (Teaching Workshop, Gallery, feedback bar) ---------------------
+  /** Called by the Teaching Workshop's "Teach Pet". */
+  teach(kind, data, meta = {}) {
+    const res = this.flow.teach(kind, data, meta);
+    if (res.ok) {
+      this.flowCam = { ref: res.plan.ref };
+      this.saveStores();
+      this.save();
+    }
+    this.hudDirty = true;
+    return res;
+  }
+
+  /** The pet glances over with interest while the player plays or draws. */
+  petNotice(kind) {
+    this.pet.notice(kind);
+  }
+
+  performItem(id) {
+    const res = this.flow.perform(id);
+    if (res.ok) {
+      this.flowCam = { ref: res.plan.ref };
+      this.galleryView.close('perform');
+      this.setView(STATION_VIEW[res.plan.kind], { auto: true });
+    } else if (res.reason === 'missing') {
+      this.hud.toast(res.message, { tone: 'warn', icon: 'i-gallery' });
+    }
+    return res;
+  }
+
+  hangItem(id) {
+    const item = this.gallery.get(id);
+    if (!item || !this.gallery.pin(id)) return false;
+    this.saveStores();
+    this.refreshWallArt();
+    this.galleryView.close('hang');
+    this.setView('wall', { auto: true });
+    this.audio.sfx('hang');
+    this.hud.toast(`"${item.title}" is now hanging on the studio wall.`, { icon: 'i-frame', duration: 3600 });
+    return true;
+  }
+
+  unhangWall() {
+    const item = this.gallery.wallItem;
+    if (!this.gallery.unpin()) return false;
+    this.saveStores();
+    this.refreshWallArt();
+    this.hud.toast(item ? `Took "${item.title}" down from the wall.` : 'Took the picture down.', { icon: 'i-frame', duration: 2400 });
+    return true;
+  }
+
+  deleteItem(id) {
+    const item = this.gallery.get(id);
+    if (!item || !this.gallery.remove(id)) return false;
+    this.saveStores();
+    this.hud.toast(`Deleted "${item.title}".`, { icon: 'i-gallery', duration: 2200 });
+    return true;
+  }
+
+  favoriteItem(id, on) {
+    if (!this.gallery.setFavorite(id, on)) return false;
+    this.saveStores();
+    return true;
+  }
+
+  /** Creation Feedback Bar actions. */
+  feedback(kind) {
+    this.audio.unlock();
+    let res;
+    if (kind === 'love') res = this.flow.love();
+    else if (kind === 'variation') res = this.flow.variation();
+    else if (NUDGES[kind]) res = this.flow.nudge(kind);
+    else if (kind === 'dismiss') res = { ok: this.flow.dismiss() };
+    else return { ok: false, reason: 'unknown' };
+    if (res.ok && (kind === 'variation' || NUDGES[kind])) this.flowCam = { ref: res.plan.ref };
+    if (!res.ok && res.message && res.reason !== 'asleep' && res.reason !== 'too-tired') this.hud.toast(res.message, { tone: 'warn' });
+    if (res.ok) this.saveStores();
+    this.hudDirty = true;
+    return res;
+  }
+
+  /** Workshop and Gallery sheets: the workshop keeps the pet in view like the Customizer. */
+  onSheetOpen(name) {
+    this.sheet = name;
+    document.body.classList.add(`${name}-open`);
+    if (name === 'workshop') {
+      this.prevView = this.studio?.view ?? 'overview';
+      this.pet.autonomy = false; // stay put and attentive while being taught
+      this.setView('pet', { auto: true });
+    }
+    this.hudDirty = true;
+    this.layoutSoon();
+  }
+
+  onSheetClose(name, reason) {
+    this.sheet = null;
+    document.body.classList.remove(`${name}-open`);
+    if (name === 'workshop') {
+      this.pet.autonomy = true;
+      if (reason !== 'teach') this.setView(this.prevView === 'wall' ? 'overview' : this.prevView);
+    }
+    this.hudDirty = true;
+    this.layoutSoon();
+  }
+
+  /** The wall frame shows the pinned drawing, else the newest drawing (or the easel's last finished one). */
+  refreshWallArt() {
+    if (!this.studio) return;
+    const pinned = this.gallery.wallItem;
+    if (pinned) {
+      this.studio.setWallArt(pinned.data, { title: pinned.title, pinned: true });
+      return;
+    }
+    const latest = this.gallery.latestDrawing();
+    if (latest) this.studio.setWallArt(latest.data, { pinned: false });
+    else if (this.pet.currentDrawing?.complete) {
+      this.studio.setWallArt(null);
+      this.studio.showCreation();
+    } else this.studio.setWallArt(null);
+  }
+
+  scheduleStoreSave(delay = 250) {
+    this.storesDirty = true;
+    clearTimeout(this.storeTimer);
+    this.storeTimer = setTimeout(() => this.saveStores(), delay);
+  }
+
+  saveStores() {
+    clearTimeout(this.storeTimer);
+    this.storesDirty = false;
+    const now = Date.now();
+    const a = saveTeachingMemory(this.memory, this.storage, now);
+    const b = saveGallery(this.gallery, this.storage, now);
+    if ((!a.ok || !b.ok) && !this.storeWarned && !this.memoryOnly) {
+      this.storeWarned = true;
+      this.hud?.toast('Could not save lessons or creations right now. They are fine in this session.', { tone: 'warn', duration: 4500 });
+    }
+    return { memory: a, gallery: b };
+  }
+
+  clearAllSaves() {
+    clearSavedPet(this.storage);
+    clearTeachingMemory(this.storage);
+    clearGallery(this.storage);
+    try {
+      this.storage.removeItem(WORKSHOP_DRAFT_KEY);
+    } catch {
+      /* ignore */
+    }
   }
 
   // ----- customizer -----------------------------------------------------------------
@@ -419,18 +631,20 @@ class App {
     let bottom = vh;
     let left = 0;
     let right = vw;
-    const { topbar, meters, dock } = this.hud.rects();
+    const { topbar, meters, dock, bar } = this.hud.rects();
     top = Math.max(top, topbar.bottom);
     const sidePanel = meters.width > 0 && meters.width < vw * 0.4 && meters.height > meters.width * 0.75;
-    if (sidePanel) left = Math.max(left, meters.right);
-    else top = Math.max(top, meters.bottom);
+    if (meters.width > 0 && meters.height > 0) {
+      if (sidePanel) left = Math.max(left, meters.right);
+      else top = Math.max(top, meters.bottom);
+    }
     bottom = Math.min(bottom, dock.top);
-    if (this.customizer?.isOpen) {
-      const r = this.customizer.panelRect();
-      if (r.width > 0) {
-        if (r.left > vw * 0.35) right = Math.min(right, r.left);
-        else bottom = Math.min(bottom, r.top);
-      }
+    // The feedback bar floats above the dock: frame the studio above it so it never covers the pet.
+    if (bar && bar.width > 0 && bar.height > 0) bottom = Math.min(bottom, bar.top);
+    const panel = this.customizer?.isOpen ? this.customizer.panelRect() : this.workshop?.isOpen ? this.workshop.panelRect() : null;
+    if (panel && panel.width > 0) {
+      if (panel.left > vw * 0.35) right = Math.min(right, panel.left);
+      else bottom = Math.min(bottom, panel.top);
     }
     const pad = 6;
     const w = Math.max(120, right - left - 2 * pad);
@@ -442,7 +656,10 @@ class App {
     const vw = window.innerWidth;
     const vh = window.innerHeight;
     const dock = document.getElementById('dock').getBoundingClientRect();
-    document.documentElement.style.setProperty('--toast-bottom', `${Math.round(vh - dock.top + 10)}px`);
+    const bar = document.getElementById('creation-bar');
+    document.documentElement.style.setProperty('--dock-top', `${Math.round(vh - dock.top + 8)}px`);
+    const barTop = bar.hidden ? dock.top : Math.min(dock.top, bar.getBoundingClientRect().top);
+    document.documentElement.style.setProperty('--toast-bottom', `${Math.round(vh - barTop + 10)}px`);
     this.safeRect = this.computeSafeRect();
     this.studio?.resize(vw, vh, this.safeRect, this.perf.dpr);
   }
@@ -478,9 +695,11 @@ class App {
         ctx.penTarget = this.studio.penWorld(this.tmp.pen);
         ctx.paintColor = this.studio.paintColor;
       } else if (a.type === 'playing_music' && this.session.music) {
-        this.stepPhrase(this.session.music, a.elapsed, ctx, false);
+        this.stepPhrase(this.session.music, a.elapsed, ctx, 'perform');
       } else if (a.type === 'listening' && this.session.listen) {
-        this.stepPhrase(this.session.listen, a.elapsed, ctx, true);
+        this.stepPhrase(this.session.listen, a.elapsed, ctx, 'lullaby');
+      } else if (a.type === 'lesson' && this.session.lesson) {
+        this.stepPhrase(this.session.lesson, a.elapsed, ctx, 'lesson');
       }
       const vm = this.vm;
       vm.position = pet.position;
@@ -502,6 +721,9 @@ class App {
 
     if (this.hudDirty || t - this.lastHud > 160) {
       this.hud.render(pet.snapshot());
+      // The feedback bar hides while a sheet covers the studio; its appearance reframes the camera.
+      const bar = this.sheet || this.customizer.isOpen ? { visible: false } : this.flow.barState();
+      if (this.hud.renderCreationBar(bar)) this.layoutSoon();
       this.lastHud = t;
       this.hudDirty = false;
     }
@@ -514,33 +736,50 @@ class App {
   }
 
   /**
-   * Plays due notes of an authored starter phrase, looping with a one-beat rest.
-   * Visuals (key press, arm, floating note) and sound are driven by the same event.
+   * Plays the due events of a phrase. `perform`: the pet plays the studio
+   * keyboard (looping with a one-beat rest); `lullaby` and `lesson`: the
+   * phrase comes from the speakers while the pet listens (lessons play once).
+   * Visuals (key press, arm, floating note, speaker thump) and sound are
+   * driven by the same note events; percussion hits thump the speakers.
    */
-  stepPhrase(s, elapsed, ctx, lullaby) {
+  stepPhrase(s, elapsed, ctx, mode) {
     const ph = s.phrase;
     const spb = 60 / ph.tempo;
-    const beat = elapsed / spb;
+    const beat = elapsed / spb - (s.lead ?? 0);
     const loopBeats = ph.beats + 1;
-    for (let guard = 0; guard < 64; guard++) {
-      const note = ph.notes[s.cursor % ph.notes.length];
-      const at = Math.floor(s.cursor / ph.notes.length) * loopBeats + note.beat;
-      if (at > beat) break;
-      if (beat - at < 0.6) {
-        const tint = NOTE_TINTS[note.midi % 12] ?? '#c3a6ff';
-        if (lullaby) {
-          if (s.cursor % 2 === 0) this.studio.speakerNote(tint);
-          this.audio.pluck(note.midi, { duration: note.dur * spb, velocity: note.vel * 0.75, pan: s.cursor % 2 ? 0.35 : -0.35 });
-        } else {
-          const r = this.studio.playNote(note.midi, tint);
-          this.session.keyTargets[r.arm] = r.key;
-          this.model.pressKey(r.arm);
-          this.audio.pluck(note.midi, { duration: note.dur * spb, velocity: note.vel, pan: r.arm === 0 ? -0.2 : 0.2 });
-        }
+    const speaker = mode !== 'perform';
+    const due = (list, cursorKey, play) => {
+      if (!list.length) return;
+      for (let guard = 0; guard < 64; guard++) {
+        const i = s[cursorKey];
+        if (s.once && i >= list.length) break;
+        const ev = list[i % list.length];
+        const at = (s.once ? 0 : Math.floor(i / list.length) * loopBeats) + ev.beat;
+        if (at > beat) break;
+        if (beat - at < 0.6) play(ev, i);
+        s[cursorKey] = i + 1;
       }
-      s.cursor++;
-    }
-    if (lullaby) ctx.listenBeat = beat;
+    };
+    due(ph.notes, 'cursor', (note, i) => {
+      const tint = noteColor(note.midi);
+      if (speaker) {
+        if (i % 2 === 0) this.studio.speakerNote(tint);
+        this.audio.pluck(note.midi, { duration: note.dur * spb, velocity: note.vel * (mode === 'lullaby' ? 0.75 : 0.9), pan: i % 2 ? 0.35 : -0.35 });
+      } else {
+        const r = this.studio.playNote(note.midi, tint);
+        this.session.keyTargets[r.arm] = r.key;
+        this.model.pressKey(r.arm);
+        this.audio.pluck(note.midi, { duration: note.dur * spb, velocity: note.vel, pan: r.arm === 0 ? -0.2 : 0.2 });
+      }
+    });
+    s.hitCursor ??= 0;
+    due(ph.hits ?? [], 'hitCursor', (hit) => {
+      const drum = drumByMidi(hit.midi);
+      if (!drum) return;
+      this.audio.drum(drum.id, { velocity: hit.vel * (speaker ? 0.85 : 1) });
+      this.studio.drumHit(drum.id, drum.color);
+    });
+    if (speaker) ctx.listenBeat = beat;
     else {
       ctx.beat = beat;
       ctx.keyTargets = this.session.keyTargets;
@@ -568,7 +807,9 @@ class App {
   }
 
   save() {
+    if (this.resetting) return { ok: false, reason: 'resetting' };
     const res = savePet(this.pet, this.storage);
+    if (this.storesDirty) this.saveStores();
     this.lastSave = performance.now();
     this.dirty = false;
     if (!res.ok && !this.saveWarned) {
@@ -603,7 +844,7 @@ class App {
     window.visualViewport?.addEventListener('resize', () => this.layoutSoon());
     if ('ResizeObserver' in window) {
       const ro = new ResizeObserver(() => this.layoutSoon());
-      for (const sel of ['.topbar', '#meters', '#dock', '#customizer']) {
+      for (const sel of ['.topbar', '#meters', '#dock', '#customizer', '#workshop', '#creation-bar']) {
         const node = document.querySelector(sel);
         if (node) ro.observe(node);
       }
@@ -627,6 +868,9 @@ class App {
     if (actions[key]) {
       e.preventDefault();
       this.action(actions[key]);
+    } else if (key === 't' || key === 'y') {
+      e.preventDefault();
+      this.openFeature(key === 't' ? 'teach' : 'gallery');
     } else if (key === 'm') {
       this.toggleMute();
     } else if (key >= '1' && key <= String(CAMERA_VIEWS.length)) {
@@ -650,53 +894,94 @@ class App {
       return r.width > 0 && r.height > 0 && cs.visibility !== 'hidden' && cs.display !== 'none';
     };
     const describe = (node) => ({ label: node.getAttribute('aria-label') || node.textContent.trim().slice(0, 40), rect: rectOf(node) });
-    // Controls inside a scrollable container (e.g. the customizer body) are reachable by scrolling.
-    const inScroller = (node) => {
-      for (let p = node.parentElement; p && p !== document.body; p = p.parentElement) {
-        const oy = getComputedStyle(p).overflowY;
-        if ((oy === 'auto' || oy === 'scroll') && p.scrollHeight > p.clientHeight + 1) return true;
-      }
-      return false;
-    };
-    const controls = [...document.querySelectorAll('button, input, [role="radio"]')].filter(visible);
-    const clipped = controls.filter((node) => {
+    /**
+     * A control is clipped when an ancestor cuts it off without being able to
+     * scroll it into view on that axis, or when it ends up outside the
+     * viewport. Controls inside a scroller (sheet bodies, chip rows) count as
+     * reachable; the scroller itself must then be fully visible.
+     */
+    const clippedNode = (node) => {
+      // Fully transparent hit areas (e.g. the native colour input stretched over a
+      // round swatch) are meant to overhang their clipping parent; the visible
+      // affordance is the parent itself.
+      if (getComputedStyle(node).opacity === '0') return false;
       const r = node.getBoundingClientRect();
-      return (r.left < -0.5 || r.top < -0.5 || r.right > vw + 0.5 || r.bottom > vh + 0.5) && !inScroller(node);
-    });
+      let box = { left: r.left, right: r.right, top: r.top, bottom: r.bottom };
+      for (let p = node.parentElement; p && p !== doc; p = p.parentElement) {
+        const cs = getComputedStyle(p);
+        if (cs.overflowX === 'visible' && cs.overflowY === 'visible') continue;
+        const pr = p.getBoundingClientRect();
+        const outX = box.left < pr.left - 0.5 || box.right > pr.right + 0.5;
+        const outY = box.top < pr.top - 0.5 || box.bottom > pr.bottom + 0.5;
+        if (!outX && !outY) continue;
+        const scrollX = /auto|scroll/.test(cs.overflowX) && p.scrollWidth > p.clientWidth + 1;
+        const scrollY = /auto|scroll/.test(cs.overflowY) && p.scrollHeight > p.clientHeight + 1;
+        if ((outX && !scrollX) || (outY && !scrollY)) return true;
+        box = { left: pr.left, right: pr.right, top: pr.top, bottom: pr.bottom };
+      }
+      return box.left < -0.5 || box.top < -0.5 || box.right > vw + 0.5 || box.bottom > vh + 0.5;
+    };
+    const controls = [...document.querySelectorAll('button, input, [role="radio"], [role="tab"]')].filter(visible);
+    const clipped = controls.filter(clippedNode);
+    // Labels that spill out of their own button (text wider than the control).
+    const overflowing = controls.filter((node) => node.tagName === 'BUTTON' && node.scrollWidth > node.clientWidth + 1);
     const small = controls.filter((node) => {
       const r = node.getBoundingClientRect();
       return Math.min(r.width, r.height) < 34;
     });
     const safe = this.safeRect ?? this.computeSafeRect();
     const inside = (r) => !!r && r.x >= safe.x - 2 && r.y >= safe.y - 2 && r.x + r.width <= safe.x + safe.w + 2 && r.y + r.height <= safe.y + safe.h + 2;
-    const petRect = this.studio && this.model ? this.studio.screenRect(this.model.getWorldBox()) : null;
-    const overlays = this.hud.rects();
-    const overlap = (a, b) => !!a && !!b && a.x < b.right && a.x + a.width > b.left && a.y < b.bottom && a.y + a.height > b.top;
+    // The silhouette (outline points) decides; the 3D box is reported for reference only.
+    const petRect = this.studio && this.model ? this.studio.screenRectOfPoints(this.model.getSilhouettePoints(this.studio.camera)) : null;
+    const petBox = this.studio && this.model ? this.studio.screenRect(this.model.getWorldBox()) : null;
+    const hudRects = this.hud.rects();
+    const panel = this.workshop?.isOpen ? this.workshop.panelRect() : this.customizer?.isOpen ? this.customizer.panelRect() : null;
+    // The gallery is a full sheet over the studio, so the pet is not expected to be visible then.
+    const blockers = { ...hudRects, ...(panel ? { panel } : {}) };
+    const overlap = (a, b) => !!a && !!b && b.width > 0 && a.x < b.right && a.x + a.width > b.left && a.y < b.bottom && a.y + a.height > b.top;
     const round = (r) => ({ x: Math.round(r.x), y: Math.round(r.y), width: Math.round(r.width), height: Math.round(r.height) });
+    const bar = document.getElementById('creation-bar');
     return {
       viewport: { width: vw, height: vh, devicePixelRatio: window.devicePixelRatio || 1, renderPixelRatio: this.perf.dpr },
       view: this.studio?.view ?? null,
       horizontalOverflow: doc.scrollWidth > vw + 0.5 || document.body.scrollWidth > vw + 0.5,
       verticalOverflow: doc.scrollHeight > vh + 0.5,
       safeRect: { x: Math.round(safe.x), y: Math.round(safe.y), width: Math.round(safe.w), height: Math.round(safe.h) },
-      overlays: { topbar: rectOf(document.querySelector('.topbar')), meters: rectOf(document.getElementById('meters')), dock: rectOf(document.getElementById('dock')) },
+      overlays: {
+        topbar: rectOf(document.querySelector('.topbar')), meters: rectOf(document.getElementById('meters')), dock: rectOf(document.getElementById('dock')),
+        creationBar: bar.hidden ? null : rectOf(bar),
+        workshop: this.workshop?.isOpen ? rectOf(this.workshop.dialog) : null,
+        gallery: this.galleryView?.isOpen ? rectOf(this.galleryView.dialog) : null,
+      },
+      sheet: this.sheet ?? (this.customizer?.isOpen ? 'customizer' : null),
       controls: controls.length,
       clippedControls: clipped.map(describe),
+      overflowingLabels: overflowing.map(describe),
       smallTouchTargets: small.map(describe),
-      pet: petRect && { rect: round(petRect), insideSafeRect: inside(petRect), overlapsUI: Object.values(overlays).some((o) => overlap(petRect, o)) },
+      cameraSettled: this.studio?.rig.settled ?? true,
+      pet: petRect && {
+        rect: round(petRect),
+        box: round(petBox),
+        insideSafeRect: inside(petRect),
+        overlapsUI: Object.values(blockers).some((o) => overlap(petRect, o)),
+        overlapsCreationBar: overlap(petRect, hudRects.bar),
+      },
       fps: this.perf.fps,
     };
   }
 
   exposeApi() {
     const app = this;
+    const ws = app.workshop;
+    const gv = app.galleryView;
     const api = {
-      version: `${BUILD.version}-iteration-1`,
+      version: `${BUILD.version}-iteration-2`,
       build: BUILD,
-      iteration: 1,
+      iteration: 2,
       schemaVersion: SCHEMA_VERSION,
+      schemas: { pet: SCHEMA_VERSION, teach: TEACH_VERSION, gallery: GALLERY_VERSION },
       ready: false,
-      learning: 'none: Iteration 1 uses authored, deterministic care/autonomy rules and starter content only',
+      learning: 'none: Iteration 2 adds teaching memory (stored demonstrations and labelled feedback) and an authored, seeded variation engine for the pet\'s attempts. No trainable parameters exist yet; genuine on-device learning arrives with Sleep Practice in Iteration 3.',
       get pet() { return app.pet; },
       get state() { return app.pet.snapshot(); },
       get record() { return app.pet.toJSON(); },
@@ -709,6 +994,7 @@ class App {
       camera: {
         views: CAMERA_VIEWS.map((v) => v.id),
         get view() { return app.studio?.view ?? null; },
+        get settled() { return app.studio?.rig.settled ?? true; },
         setView: (id, opts) => { app.setView(id, opts); return app.studio?.view ?? null; },
       },
       customize: {
@@ -734,8 +1020,80 @@ class App {
         setMuted: (m) => { app.audio.setMuted(m); app.hud.setMuted(app.audio.muted); },
       },
       features: app.features,
-      save: () => app.save(),
-      reset: () => { clearSavedPet(app.storage); window.location.reload(); },
+      /** Teaching Workshop + teaching memory (replay buffer). Memory is not learning. */
+      teach: {
+        open: (tab) => { app.openFeature('teach'); if (tab) ws.setTab(tab); return ws.isOpen; },
+        close: () => ws.close('api'),
+        get isOpen() { return ws.isOpen; },
+        get state() { return ws.state(); },
+        setTab: (tab) => ws.setTab(tab),
+        templates: {
+          music: ['sunny-arp', 'bouncy-walk', 'starlight-lullaby', 'playful-hop'],
+          drawing: ['star', 'heart', 'flower', 'sun', 'spiral'],
+        },
+        loadTemplate: (id) => ws.loadTemplate(id),
+        stampShape: (id) => ws.useShape(id),
+        setChromatic: (on) => ws.setChromatic(on),
+        setBeats: (n) => ws.setBeats(n),
+        setTempo: (bpm) => { ws.music.setTempo(bpm); ws._sync(); return ws.music.tempo; },
+        playNote: (midi, vel) => ws.playNote(midi, { vel }),
+        hit: (drum) => ws.hitDrum(drum),
+        record: () => ws.toggleRecord(),
+        preview: () => ws.togglePreview(),
+        clear: () => (ws.tab === 'music' ? ws._command('clear-music') : ws._command('clear-draw')),
+        undo: () => (ws.tab === 'music' ? ws._command('undo-music') : ws._command('undo-draw')),
+        setPhrase: (phrase) => ws.setPhrase(phrase),
+        setDrawing: (drawing) => ws.setDrawing(drawing),
+        get phrase() { return ws.music.snapshot(); },
+        get drawing() { return ws.drawing.drawing; },
+        timelinePoint: (beat, midi, drum = false) => ws.timelinePoint(beat, midi, drum),
+        /** Teaches the current draft (`kind` defaults to the open tab). */
+        teach: (kind) => ws.teach(kind),
+        /** Teaches a given phrase or drawing directly, bypassing the sheet. */
+        teachData: (kind, data, meta) => app.teach(kind, data, meta),
+        get memory() { return app.memory.snapshot(); },
+        get lessons() { return app.memory.lessons.map((l) => ({ ...l })); },
+        get prefs() { return { ...app.memory.prefs }; },
+        get signals() { return app.memory.signals.map((s) => ({ ...s })); },
+        engine: ENGINE_INFO,
+        learning: 'none: lessons are stored examples; attempts come from the authored variation engine',
+      },
+      /** Creation Gallery (bounded, versioned history) and the studio wall frame. */
+      gallery: {
+        open: (filter) => { app.openFeature('gallery'); if (filter) gv.setFilter(filter); return gv.isOpen; },
+        close: () => gv.close('api'),
+        get isOpen() { return gv.isOpen; },
+        get state() { return gv.state(); },
+        get items() { return app.gallery.summaries(); },
+        get: (id) => app.gallery.get(id),
+        get counts() { return app.gallery.counts(); },
+        get wall() { return app.gallery.wall; },
+        get wallArt() { return app.studio?.wallArt ?? null; },
+        limits: GALLERY_LIMITS,
+        get bytes() { return app.gallery.bytes(); },
+        filter: (f) => gv.setFilter(f),
+        favorite: (id, on = true) => app.favoriteItem(id, on),
+        remove: (id) => app.deleteItem(id),
+        perform: (id) => app.performItem(id),
+        hang: (id) => app.hangItem(id),
+        unhang: () => app.unhangWall(),
+        compare: (a, b) => { if (!gv.isOpen) app.openFeature('gallery'); return gv.compare(a, b); },
+      },
+      /** The Creation Feedback Bar and the creation currently in focus. */
+      creation: {
+        get bar() { const s = app.flow.barState(); return s.visible ? { ...s, data: undefined } : s; },
+        get subject() { const s = app.flow.subject; return s ? { ref: s.ref, kind: s.kind, origin: s.origin, mode: s.mode, phase: s.phase, title: s.title, itemId: s.itemId ?? null, loved: !!s.loved, tags: [...(s.tags ?? [])] } : null; },
+        love: () => app.feedback('love'),
+        variation: () => app.feedback('variation'),
+        nudge: (id) => app.feedback(id),
+        dismiss: () => app.feedback('dismiss'),
+      },
+      save: () => { app.saveStores(); return app.save(); },
+      reset: () => {
+        app.resetting = true; // the reload's pagehide must not save the cleared pet again
+        app.clearAllSaves();
+        window.location.reload();
+      },
       scene: app.studio,
       model: app.model,
     };

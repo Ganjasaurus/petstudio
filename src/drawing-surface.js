@@ -4,10 +4,12 @@
  * Paints the normalised stroke representation (see starter-repertoire.js)
  * onto a canvas a little at a time, so the pet visibly draws on the easel
  * instead of swapping in a finished picture. Deterministic: the same drawing
- * at the same progress always produces the same pixels. Reusable by the
- * future teaching canvas.
+ * at the same progress always produces the same pixels. Taught strokes carry
+ * real pen pressure; the stroke styling is shared with creation-render.js so
+ * the easel, the workshop canvas, the gallery and the wall frame match.
  */
 import { strokeLength } from './starter-repertoire.js';
+import { pressureWidth } from './creation-render.js';
 
 export class DrawingSurface {
   constructor(size = 512) {
@@ -108,8 +110,8 @@ export class DrawingSurface {
           const t0 = Math.max(0, (a - segStart) / segLen);
           const t1 = Math.min(1, (b - segStart) / segLen);
           const u = (segStart + segLen * ((t0 + t1) / 2)) / len;
-          const pressure = 0.62 + 0.38 * Math.sin(Math.min(1, u) * Math.PI);
-          ctx.lineWidth = Math.max(1.5, stroke.width * S * pressure);
+          // Taught strokes carry real pen pressure; starter strokes taper gently.
+          ctx.lineWidth = Math.max(1.5, stroke.width * S * pressureWidth(pts[j - 1], pts[j], u));
           ctx.beginPath();
           ctx.moveTo((x0 + (x1 - x0) * t0) * S, (y0 + (y1 - y0) * t0) * S);
           ctx.lineTo((x0 + (x1 - x0) * t1) * S, (y0 + (y1 - y0) * t1) * S);

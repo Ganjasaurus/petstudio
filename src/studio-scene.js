@@ -3,8 +3,10 @@
  *
  * Warm cel-shaded room with soft shadows, wooden floorboards, pastel walls and
  * five interactive stations the pet walks to and uses (Music Corner, Drawing
- * Easel, Sleep Nook, Snack Bar, Bubble Bath), particles, a responsive camera
- * rig with station focus presets, and raycast picking of stations and pet.
+ * Easel, Sleep Nook, Snack Bar, Bubble Bath), a gallery frame on the left wall
+ * that shows the drawing hung from the Gallery (with a title plaque), all 22
+ * playable keyboard keys, particles, a responsive camera rig with station
+ * focus presets, and raycast picking of stations, frame and pet.
  * All geometry and textures are procedural and original.
  */
 import * as THREE from 'three';
@@ -14,6 +16,7 @@ import { makeToonMaterial } from './toon.js';
 import { ParticleSystem } from './particles.js';
 import { DrawingSurface } from './drawing-surface.js';
 import { drawIcon } from './canvas-icons.js';
+import { paintDrawing } from './creation-render.js';
 
 const TAU = Math.PI * 2;
 const deg = (d) => (d * Math.PI) / 180;
@@ -29,8 +32,13 @@ export const CAMERA_VIEWS = Object.freeze([
   { id: 'sleep', label: 'Sleep Nook', icon: 'sleep' },
 ]);
 
+/** Extra camera presets used by the app (not shown in the view switcher). */
+export const EXTRA_VIEWS = Object.freeze(['wall']);
+
 /** White keys of the studio keyboard, C4..A5, matching the starter phrase range. */
 export const KEYBOARD_MIDI = Object.freeze([60, 62, 64, 65, 67, 69, 71, 72, 74, 76, 77, 79, 81]);
+/** Indices of the white keys each black key follows (C#, D#, F#, G#, A# in both octaves). */
+const BLACK_AFTER = Object.freeze([0, 1, 3, 4, 5, 7, 8, 10, 11]);
 
 // ---------------------------------------------------------------------------
 // Geometry helpers
@@ -344,22 +352,44 @@ function buildRoom(P) {
   g.add(mesh(rbox(0.04, 0.6, 0.76, 0.02), P.wood, { pos: [-H + 0.022, 1.88, -2.15] }));
   g.add(mesh(new THREE.PlaneGeometry(0.66, 0.5), P.night, { pos: [-H + 0.046, 1.88, -2.15], rot: [0, Math.PI / 2, 0], cast: false }));
 
+  // Gallery wall frame: shows the drawing hung from the Gallery (or the latest one).
   const creationCanvas = document.createElement('canvas');
-  creationCanvas.width = 256;
-  creationCanvas.height = 256;
+  creationCanvas.width = 512;
+  creationCanvas.height = 512;
   const creationTexture = new THREE.CanvasTexture(creationCanvas);
   creationTexture.colorSpace = THREE.SRGBColorSpace;
-  const creation = { canvas: creationCanvas, ctx: creationCanvas.getContext('2d'), texture: creationTexture };
-  creation.ctx.fillStyle = '#fffaf1';
-  creation.ctx.fillRect(0, 0, 256, 256);
-  creation.ctx.strokeStyle = 'rgba(170,140,110,0.5)';
-  creation.ctx.setLineDash([10, 8]);
-  creation.ctx.lineWidth = 4;
-  creation.ctx.strokeRect(24, 24, 208, 208);
-  g.add(mesh(rbox(0.05, 0.84, 0.84, 0.025), P.woodLight, { pos: [-H + 0.025, 1.72, 1.0] }));
-  g.add(mesh(new THREE.PlaneGeometry(0.72, 0.72), makeToonMaterial({ color: '#ffffff', map: creationTexture, steps: 4, rim: 0 }), {
+  creationTexture.anisotropy = 4;
+  const plaqueCanvas = document.createElement('canvas');
+  plaqueCanvas.width = 512;
+  plaqueCanvas.height = 96;
+  const plaqueTexture = new THREE.CanvasTexture(plaqueCanvas);
+  plaqueTexture.colorSpace = THREE.SRGBColorSpace;
+  const frame = new THREE.Group();
+  frame.name = 'gallery-frame';
+  frame.userData.pickId = 'frame';
+  frame.add(mesh(rbox(0.05, 0.84, 0.84, 0.025), P.woodLight, { pos: [-H + 0.025, 1.72, 1.0] }));
+  frame.add(mesh(new THREE.PlaneGeometry(0.72, 0.72), makeToonMaterial({ color: '#ffffff', map: creationTexture, steps: 4, rim: 0 }), {
     pos: [-H + 0.054, 1.72, 1.0], rot: [0, Math.PI / 2, 0], cast: false,
   }));
+  const plaque = new THREE.Group();
+  plaque.add(mesh(rbox(0.03, 0.1, 0.52, 0.012), P.gold, { pos: [-H + 0.02, 1.2, 1.0] }));
+  plaque.add(mesh(new THREE.PlaneGeometry(0.48, 0.084), makeToonMaterial({ color: '#ffffff', map: plaqueTexture, steps: 4, rim: 0 }), {
+    pos: [-H + 0.037, 1.2, 1.0], rot: [0, Math.PI / 2, 0], cast: false,
+  }));
+  const rosette = new THREE.Group();
+  rosette.position.set(-H + 0.07, 2.12, 1.36);
+  rosette.add(mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.02, 20), P.coral, { rot: [0, 0, Math.PI / 2] }));
+  rosette.add(mesh(new THREE.SphereGeometry(0.028, 12, 10), P.gold, { pos: [0.012, 0, 0] }));
+  rosette.add(mesh(new THREE.BoxGeometry(0.012, 0.09, 0.025), P.coral, { pos: [0, -0.07, -0.015], rot: [0.25, 0, 0] }));
+  rosette.add(mesh(new THREE.BoxGeometry(0.012, 0.09, 0.025), P.coral, { pos: [0, -0.07, 0.015], rot: [-0.25, 0, 0] }));
+  plaque.visible = false;
+  rosette.visible = false;
+  frame.add(plaque, rosette);
+  g.add(frame);
+  const creation = {
+    canvas: creationCanvas, ctx: creationCanvas.getContext('2d'), texture: creationTexture,
+    plaque, rosette, plaqueCtx: plaqueCanvas.getContext('2d'), plaqueTexture, frame,
+  };
 
   // Wall clock showing the real local time.
   const clock = new THREE.Group();
@@ -419,12 +449,22 @@ function buildMusicCorner(P) {
     const k = mesh(rbox(0.086, 0.035, 0.27, 0.01, 2), P.white, { pos: [0.564 - i * 0.094, 0.685, -0.05] });
     k.userData.baseY = 0.685;
     k.userData.press = 0;
+    k.userData.tip = new THREE.Vector3(0, 0.03, -0.04);
     g.add(k);
     return k;
   });
-  for (const i of [0, 1, 3, 4, 5, 7, 8, 10, 11]) {
-    g.add(mesh(rbox(0.05, 0.03, 0.15, 0.008, 2), P.ink, { pos: [0.564 - (i + 0.5) * 0.094, 0.712, 0.02] }));
-  }
+  // Black keys press too, so chromatic lessons are played on real keys.
+  const blackKeys = BLACK_AFTER.map((i) => {
+    const k = mesh(rbox(0.05, 0.03, 0.15, 0.008, 2), P.ink, { pos: [0.564 - (i + 0.5) * 0.094, 0.712, 0.02] });
+    k.userData.baseY = 0.712;
+    k.userData.press = 0;
+    k.userData.tip = new THREE.Vector3(0, 0.025, 0.0);
+    g.add(k);
+    return k;
+  });
+  const keyByMidi = new Map(KEYBOARD_MIDI.map((m, i) => [m, keys[i]]));
+  BLACK_AFTER.forEach((i, j) => keyByMidi.set(KEYBOARD_MIDI[i] + 1, blackKeys[j]));
+  const allKeys = [...keys, ...blackKeys];
   g.add(mesh(rbox(1.2, 0.03, 0.08, 0.012), P.ink, { pos: [0, 0.68, 0.17] }));
   [P.coral, P.yellow, P.lavender, P.mint].forEach((m, j) => {
     g.add(mesh(new THREE.CylinderGeometry(0.025, 0.025, 0.03, 12), m, { pos: [0.4 - j * 0.11, 0.71, 0.17] }));
@@ -467,27 +507,31 @@ function buildMusicCorner(P) {
       const i = KEYBOARD_MIDI.indexOf(midi);
       return i >= 0 ? i : 6;
     },
+    /** The key mesh for any MIDI note on the keyboard (white or black). */
+    keyFor(midi) {
+      return keyByMidi.get(midi) ?? keys[this.keyIndex(midi)];
+    },
     /** World position of a key's top surface (arm target). */
     keyWorld(midi, target = new THREE.Vector3()) {
-      const k = keys[this.keyIndex(midi)];
-      return k.localToWorld(target.set(0, 0.03, -0.04));
+      const k = this.keyFor(midi);
+      return k.localToWorld(target.copy(k.userData.tip));
     },
-    /** Arm that plays a key: 0 = pet's left (low notes), 1 = right. */
+    /** Arm that plays a key: 0 = pet's left (low notes, up to A#4), 1 = right. */
     armFor(midi) {
-      return this.keyIndex(midi) < 6 ? 0 : 1;
+      return midi <= 70 ? 0 : 1;
     },
     speakerTop(i, target = new THREE.Vector3()) {
       return woofers[i % 2].localToWorld(target.set(0, 0.42, 0.05));
     },
     press(midi) {
-      keys[this.keyIndex(midi)].userData.press = 1;
+      this.keyFor(midi).userData.press = 1;
       pulse = 1;
     },
-    pulseSpeakers() {
-      pulse = 1;
+    pulseSpeakers(amount = 1) {
+      pulse = Math.max(pulse, amount);
     },
     update(dt, { active, listening }) {
-      for (const k of keys) {
+      for (const k of allKeys) {
         k.userData.press = Math.max(0, k.userData.press - dt * 7);
         k.position.y = k.userData.baseY - k.userData.press * 0.014;
       }
@@ -798,12 +842,14 @@ export class CameraRig {
     this.camera.updateProjectionMatrix();
     this.layoutVersion++;
     this.fitCache.clear();
+    this.settled = false; // only a rendered frame that reaches the new framing settles it again
   }
 
   setView(id, { instant = false } = {}) {
-    if (!CAMERA_VIEWS.some((v) => v.id === id)) return false;
+    if (!CAMERA_VIEWS.some((v) => v.id === id) && !EXTRA_VIEWS.includes(id)) return false;
     this.view = id;
     this.user = { yaw: 0, pitch: 0, zoom: 1 };
+    this.settled = false;
     if (instant || this.reduced) this.snap = true;
     return true;
   }
@@ -828,6 +874,9 @@ export class CameraRig {
         const c = STATIONS.bed.center;
         return { id, target: new THREE.Vector3(c.x + 0.2, 0.5, c.z + 0.3), yaw: deg(44), pitch: deg(33), radius: 1.45 };
       }
+      case 'wall':
+        // The gallery frame on the left wall (faces +x), seen from inside the room.
+        return { id, target: new THREE.Vector3(-ROOM.half + 0.06, 1.66, 1.0), yaw: deg(76), pitch: deg(9), radius: 0.66 };
       default:
         return { id: 'overview', target: new THREE.Vector3(-0.1, 1.0, -0.1), yaw: deg(42), pitch: deg(portrait ? 44 : 30), points: this.overview, center: true };
     }
@@ -933,6 +982,8 @@ export class CameraRig {
       s.dist += (goalDist - s.dist) * k;
       s.target.lerp(goal, k);
     }
+    // Settled once the damped camera has (nearly) reached its framing goal.
+    this.settled = Math.abs(goalDist - s.dist) / goalDist + s.target.distanceTo(goal) / goalDist + Math.abs(yaw - s.yaw) + Math.abs(pitch - s.pitch) < 0.004;
     const cp = Math.cos(s.pitch);
     this.camera.position.set(s.target.x + Math.sin(s.yaw) * cp * s.dist, s.target.y + Math.sin(s.pitch) * s.dist, s.target.z + Math.cos(s.yaw) * cp * s.dist);
     this.camera.lookAt(s.target);
@@ -1059,6 +1110,9 @@ export class StudioScene {
       rug.userData.pickId = 'station:rug';
       this.pickables.push(rug);
     }
+    this.pickables.push(this.creation.frame);
+    this.wallArt = { hasArt: false, pinned: false, title: '' };
+    this.setWallArt(null);
 
     this.hoverRing = new THREE.Mesh(
       new THREE.RingGeometry(0.86, 1, 56),
@@ -1167,6 +1221,13 @@ export class StudioScene {
     this.particles.emit('note', m.speakerTop(Math.random() < 0.5 ? 0 : 1, this._v), { tint });
   }
 
+  /** Visual side of a percussion hit: the speakers thump (kicks hardest). */
+  drumHit(kind, tint) {
+    const m = this.stations.music;
+    m.pulseSpeakers(kind === 'kick' ? 1 : kind === 'hat' ? 0.35 : 0.65);
+    if (Math.random() < 0.3) this.particles.emit('note', m.speakerTop(Math.random() < 0.5 ? 0 : 1, this._v), { tint });
+  }
+
   // ----- easel ---------------------------------------------------------------
   startDrawing(drawing) {
     this.stations.easel.surface.start(drawing);
@@ -1188,13 +1249,69 @@ export class StudioScene {
     return this.stations.easel.surface.pen?.color ?? null;
   }
 
-  /** Copies the easel picture into the "latest drawing" frame on the wall. */
+  /** Copies the easel picture into the wall frame (fallback when nothing is hung from the Gallery). */
   showCreation() {
+    if (this.wallArt.pinned) return;
     const { ctx, canvas, texture } = this.creation;
     ctx.fillStyle = '#fffaf1';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     ctx.drawImage(this.stations.easel.surface.canvas, 0, 0, canvas.width, canvas.height);
     texture.needsUpdate = true;
+    this.wallArt = { hasArt: true, pinned: false, title: '' };
+  }
+
+  /**
+   * Shows a drawing in the gallery frame on the left wall. `pinned` adds the
+   * brass title plaque and a rosette (the player hung it from the Gallery).
+   * `null` shows the empty frame.
+   */
+  setWallArt(drawing, { title = '', pinned = false } = {}) {
+    const { ctx, canvas, texture, plaque, rosette, plaqueCtx, plaqueTexture } = this.creation;
+    const S = canvas.width;
+    const has = !!drawing?.strokes?.length;
+    if (has) {
+      paintDrawing(ctx, drawing, S, { border: false });
+    } else {
+      ctx.fillStyle = '#fffaf1';
+      ctx.fillRect(0, 0, S, S);
+      ctx.save();
+      ctx.strokeStyle = 'rgba(170, 140, 110, 0.5)';
+      ctx.setLineDash([20, 16]);
+      ctx.lineWidth = 8;
+      ctx.strokeRect(S * 0.094, S * 0.094, S * 0.812, S * 0.812);
+      ctx.restore();
+    }
+    texture.needsUpdate = true;
+    const show = has && pinned;
+    plaque.visible = show;
+    rosette.visible = show;
+    if (show) {
+      const W = plaqueCtx.canvas.width;
+      const Hh = plaqueCtx.canvas.height;
+      const g = plaqueCtx.createLinearGradient(0, 0, 0, Hh);
+      g.addColorStop(0, '#f8d77a');
+      g.addColorStop(1, '#dfae45');
+      plaqueCtx.fillStyle = g;
+      plaqueCtx.fillRect(0, 0, W, Hh);
+      plaqueCtx.strokeStyle = 'rgba(120, 80, 20, 0.45)';
+      plaqueCtx.lineWidth = 6;
+      plaqueCtx.strokeRect(5, 5, W - 10, Hh - 10);
+      plaqueCtx.fillStyle = '#5a3c12';
+      plaqueCtx.textAlign = 'center';
+      plaqueCtx.textBaseline = 'middle';
+      let size = 44;
+      const text = title || 'Untitled';
+      plaqueCtx.font = `800 ${size}px ui-rounded, "Segoe UI", system-ui, sans-serif`;
+      while (size > 26 && plaqueCtx.measureText(text).width > W - 48) {
+        size -= 2;
+        plaqueCtx.font = `800 ${size}px ui-rounded, "Segoe UI", system-ui, sans-serif`;
+      }
+      let shown = text;
+      while (shown.length > 3 && plaqueCtx.measureText(shown).width > W - 48) shown = `${shown.slice(0, -2)}…`;
+      plaqueCtx.fillText(shown, W / 2, Hh / 2 + 2);
+      plaqueTexture.needsUpdate = true;
+    }
+    this.wallArt = { hasArt: has, pinned: show, title: show ? title : '' };
   }
 
   /**
@@ -1276,6 +1393,22 @@ export class StudioScene {
     return { x: rect.left + ((v.x + 1) / 2) * rect.width, y: rect.top + ((1 - v.y) / 2) * rect.height, visible: v.z < 1 };
   }
 
+  /** Screen rect (CSS px) covering a list of world points. */
+  screenRectOfPoints(points) {
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (const p of points) {
+      const s = this.toScreen(p);
+      minX = Math.min(minX, s.x);
+      maxX = Math.max(maxX, s.x);
+      minY = Math.min(minY, s.y);
+      maxY = Math.max(maxY, s.y);
+    }
+    return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+  }
+
   /** Screen rect (CSS px) covering a world-space Box3. */
   screenRect(box) {
     let minX = Infinity;
@@ -1303,6 +1436,7 @@ export class StudioScene {
       programs: r.programs?.length ?? 0,
       pixelRatio: this.renderer.getPixelRatio(),
       particles: this.particles.activeCount,
+      wallArt: { ...this.wallArt },
     };
   }
 

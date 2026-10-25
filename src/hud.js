@@ -1,13 +1,33 @@
 /**
  * hud.js: the DOM heads-up display. Pet name and personality badges, the
  * activity status pill, camera view switcher, needs meters, action dock,
- * toasts, hover tips and the "coming next" sheet. Pure presentation: it
- * renders simulation snapshots and reports user intent through callbacks.
+ * toasts, hover tips, the "More" sheet and the Creation Feedback Bar. Pure
+ * presentation: it renders state snapshots and reports user intent through
+ * callbacks.
  */
 import { NEEDS, NEED_INFO, needWord, TRAIT_LABELS, topTraitsOf } from './pet-state.js';
+import { ORIGIN_LABELS } from './gallery-store.js';
+import { paintDrawing, paintPhraseRoll, fitCanvas } from './creation-render.js';
 
 const NEED_ICON = { hunger: 'i-hunger', energy: 'i-energy', hygiene: 'i-hygiene', mood: 'i-mood', curiosity: 'i-curiosity', bond: 'i-bond' };
-const STATUS_ICON = { idle: 'i-mood', walk: 'i-walk', food: 'i-hunger', bath: 'i-wash', sleep: 'i-rest', music: 'i-music', draw: 'i-draw', listen: 'i-listen' };
+const STATUS_ICON = { idle: 'i-mood', walk: 'i-walk', food: 'i-hunger', bath: 'i-wash', sleep: 'i-rest', music: 'i-music', draw: 'i-draw', listen: 'i-listen', teach: 'i-teach' };
+const FEEDBACK = Object.freeze(['love', 'variation', 'calmer', 'livelier', 'neater', 'wilder', 'dismiss']);
+
+/** One-line status for the feedback bar. */
+function barStatus(s) {
+  const music = s.kind === 'music';
+  switch (s.phase) {
+    case 'lesson': return music ? 'Listening to your tune…' : 'Studying your drawing…';
+    case 'walking': return music ? 'Heading to the Music Corner…' : 'Heading to the easel…';
+    case 'performing':
+      if (s.mode === 'replay') return music ? 'Performing it from the gallery…' : 'Redrawing it from the gallery…';
+      if (s.mode === 'variation') return music ? 'Trying a new idea on the keys…' : 'Trying a new idea at the easel…';
+      if (s.mode === 'starter') return music ? 'Playing a little tune of its own…' : 'Painting a doodle of its own…';
+      return music ? 'Playing its own take…' : 'Drawing its own take…';
+    case 'done': return s.loved ? 'Loved and saved to your Gallery.' : 'How was it? Love it, or guide the next try.';
+    default: return '';
+  }
+}
 const VIEW_ICON = { home: 'i-home', paw: 'i-paw', music: 'i-music', draw: 'i-draw', sleep: 'i-sleep' };
 const BUSY = { feed: 'eating', wash: 'bathing', rest: 'sleeping', music: 'playing_music', draw: 'drawing' };
 
@@ -29,7 +49,7 @@ function el(tag, cls, text) {
 }
 
 export class Hud {
-  constructor({ views, features = [], onAction, onView, onMute, onCustomize, onFeature } = {}) {
+  constructor({ views, features = [], onAction, onView, onMute, onCustomize, onFeature, onFeedback } = {}) {
     const $ = (id) => document.getElementById(id);
     this.el = {
       name: $('pet-name'), avatar: $('pet-avatar'), badges: $('badges'),
@@ -37,8 +57,16 @@ export class Hud {
       meters: $('meters'), views: $('views'), mute: $('btn-mute'), customize: $('btn-customize'),
       dock: $('dock'), toasts: $('toasts'), tip: $('hover-tip'),
       nextSheet: $('next-sheet'), nextList: $('next-list'), nextButtons: $('next-buttons'),
+      bar: $('creation-bar'),
     };
-    this.cb = { onAction, onView, onMute, onCustomize, onFeature };
+    const bar = this.el.bar;
+    this.barEl = {
+      thumb: bar.querySelector('.cb-thumb'), name: bar.querySelector('.cb-name'), origin: bar.querySelector('.cb-origin'),
+      status: bar.querySelector('.cb-status'), fill: bar.querySelector('.cb-progress i'), love: bar.querySelector('[data-fb="love"]'),
+      buttons: [...bar.querySelectorAll('[data-fb]')].filter((b) => b.dataset.fb !== 'dismiss'),
+    };
+    this.barThumb = { key: null, progress: -1, playhead: null };
+    this.cb = { onAction, onView, onMute, onCustomize, onFeature, onFeedback };
     this.meterEls = {};
     this.last = {};
     this.lastToast = { text: '', at: 0 };
@@ -112,7 +140,17 @@ export class Hud {
     this.el.customize.addEventListener('click', () => this.cb.onCustomize?.());
     const sheet = this.el.nextSheet;
     sheet.addEventListener('click', (e) => {
+      const open = e.target.closest('button[data-feature]');
+      if (open) {
+        sheet.close();
+        this.cb.onFeature?.(open.dataset.feature);
+        return;
+      }
       if (e.target === sheet || e.target.closest('[data-close]')) sheet.close();
+    });
+    this.el.bar.addEventListener('click', (e) => {
+      const b = e.target.closest('button[data-fb]');
+      if (b && !b.disabled && FEEDBACK.includes(b.dataset.fb)) this.cb.onFeedback?.(b.dataset.fb);
     });
   }
 
@@ -241,31 +279,103 @@ export class Hud {
     this.el.tip.hidden = true;
   }
 
-  /** Iteration 2/3 placeholders: inline buttons on wide screens plus the "More" sheet. */
+  /** Workshop features: inline dock buttons on wide screens plus the "More" sheet. */
   setFeatures(features) {
     this.features = features;
     this.el.nextButtons.replaceChildren(...features.map((f) => {
       const b = el('button', f.available ? 'act' : 'act soon');
       b.type = 'button';
       b.dataset.feature = f.id;
-      b.title = f.available ? f.label : `${f.label}: coming in Iteration ${f.iteration}`;
+      const key = f.shortcut ? ` (${f.shortcut})` : '';
+      b.title = f.available ? `${f.label}${key}` : `${f.label}: coming in Iteration ${f.iteration}`;
       b.setAttribute('aria-label', f.available ? f.label : `${f.label}, coming in Iteration ${f.iteration}`);
       b.append(svgIcon(`i-${f.icon}`), el('span', 'lbl', f.short ?? f.label));
       if (!f.available) b.append(el('span', 'tag', 'Soon'));
       return b;
     }));
     this.el.nextList.replaceChildren(...features.map((f) => {
-      const li = el('li', 'next-item');
+      const li = el('li', f.available ? 'next-row' : 'next-item');
       li.dataset.feature = f.id;
       const wrap = el('span', 'ico-wrap');
       wrap.append(svgIcon(`i-${f.icon}`));
       const body = el('div');
       const h = el('h3', null, f.label);
-      h.append(el('span', 'it-tag', f.available ? 'Available' : `Iteration ${f.iteration}`));
+      h.append(el('span', 'it-tag', f.available ? 'Open' : `Iteration ${f.iteration}`));
       body.append(h, el('p', null, f.description));
-      li.append(wrap, body);
+      if (f.available) {
+        // Available features are real buttons: tapping opens them.
+        const b = el('button', 'next-item next-open');
+        b.type = 'button';
+        b.dataset.feature = f.id;
+        b.setAttribute('aria-label', `Open ${f.label}`);
+        b.append(wrap, body);
+        li.append(b);
+      } else {
+        li.append(wrap, body);
+      }
       return li;
     }));
+  }
+
+  /**
+   * Renders the Creation Feedback Bar from CreationFlow.barState(). Returns
+   * true when its visibility changed (the studio framing must be updated).
+   */
+  renderCreationBar(state) {
+    const bar = this.el.bar;
+    const show = !!state?.visible;
+    const changed = show === bar.hidden;
+    if (!show) {
+      if (!bar.hidden) bar.hidden = true;
+      this.last.bar = null;
+      return changed;
+    }
+    bar.hidden = false;
+    const E = this.barEl;
+    const key = [state.phase, state.title, state.origin, state.loved, state.canFeedback, state.kind, state.mode, state.petName, state.ref].join('|');
+    if (key !== this.last.bar) {
+      this.last.bar = key;
+      bar.dataset.phase = state.phase;
+      bar.dataset.kind = state.kind;
+      E.name.textContent = state.title;
+      E.origin.textContent = ORIGIN_LABELS[state.origin] ?? '';
+      E.origin.dataset.origin = state.origin;
+      E.status.textContent = barStatus(state);
+      for (const b of E.buttons) b.disabled = !state.canFeedback;
+      E.love.disabled = !state.canFeedback || state.loved;
+      E.love.setAttribute('aria-pressed', String(!!state.loved));
+      E.love.querySelector('span').textContent = state.loved ? 'Loved' : 'Love It';
+      this.barThumb.key = null;
+    }
+    E.fill.style.width = `${Math.round(state.progress * 1000) / 10}%`;
+    this._paintBarThumb(state);
+    return changed;
+  }
+
+  _paintBarThumb(state) {
+    const canvas = this.barEl.thumb;
+    const css = canvas.clientWidth || 48;
+    const t = this.barThumb;
+    let playhead = null;
+    if (state.kind === 'music' && state.data && state.phase !== 'done' && state.phase !== 'walking') {
+      const beat = (state.elapsed * state.data.tempo) / 60;
+      const loop = state.phase === 'performing' ? state.data.beats + 1 : Infinity;
+      const b = beat % loop;
+      playhead = b <= state.data.beats ? b : null;
+    }
+    const drawingProgress = state.phase === 'done' || state.phase === 'walking' ? 1 : state.progress;
+    const key = `${this.last.bar}|${css}`;
+    if (t.key === key && Math.abs(t.progress - drawingProgress) < 0.01 && (playhead == null ? t.playhead == null : Math.abs((t.playhead ?? -9) - playhead) < 0.05)) return;
+    t.key = key;
+    t.progress = drawingProgress;
+    t.playhead = playhead;
+    const dpr = fitCanvas(canvas, css, css);
+    const ctx = canvas.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, css, css);
+    if (!state.data) return;
+    if (state.kind === 'drawing') paintDrawing(ctx, state.data, css, { progress: drawingProgress, border: false });
+    else paintPhraseRoll(ctx, state.data, { w: css, h: css, playhead, pad: 4, radius: 8 });
   }
 
   openNext(focusId = null) {
@@ -276,6 +386,8 @@ export class Hud {
   /** CSS-pixel rects of the overlay regions (for camera framing and layout checks). */
   rects() {
     const r = (node) => node.getBoundingClientRect();
-    return { topbar: r(document.querySelector('.topbar')), meters: r(this.el.meters), dock: r(this.el.dock) };
+    const out = { topbar: r(document.querySelector('.topbar')), meters: r(this.el.meters), dock: r(this.el.dock) };
+    if (!this.el.bar.hidden) out.bar = r(this.el.bar);
+    return out;
   }
 }

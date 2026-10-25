@@ -148,6 +148,97 @@ export class StudioAudio {
     osc.stop(t0 + duration + 0.1);
   }
 
+  _noise() {
+    if (!this.noiseBuffer) {
+      const ctx = this.ctx;
+      const len = Math.floor(ctx.sampleRate * 0.6);
+      const buf = ctx.createBuffer(1, len, ctx.sampleRate);
+      const d = buf.getChannelData(0);
+      let seed = 12345;
+      for (let i = 0; i < len; i++) {
+        seed = (seed * 16807) % 2147483647;
+        d[i] = (seed / 2147483647) * 2 - 1;
+      }
+      this.noiseBuffer = buf;
+    }
+    return this.noiseBuffer;
+  }
+
+  _noiseBurst(t0, { type = 'highpass', freq = 6000, q = 0.7, decay = 0.06, peak = 0.2, pan = 0 } = {}) {
+    const ctx = this.ctx;
+    const src = ctx.createBufferSource();
+    src.buffer = this._noise();
+    const filter = ctx.createBiquadFilter();
+    filter.type = type;
+    filter.frequency.value = freq;
+    filter.Q.value = q;
+    const amp = ctx.createGain();
+    amp.gain.setValueAtTime(0.0001, t0);
+    amp.gain.exponentialRampToValueAtTime(peak, t0 + 0.004);
+    amp.gain.exponentialRampToValueAtTime(0.0001, t0 + decay);
+    src.connect(filter).connect(amp);
+    this._out(amp, pan);
+    src.start(t0);
+    src.stop(t0 + decay + 0.05);
+  }
+
+  /** Synthesised percussion for the rhythm pads: kick, clap, hat (hi-hat) and block (wood block). */
+  drum(kind, { when = 0, velocity = 0.8, pan = 0 } = {}) {
+    if (!this.ready || this.muted) return;
+    const ctx = this.ctx;
+    const t0 = ctx.currentTime + Math.max(0, when);
+    const v = Math.max(0.05, Math.min(1, velocity));
+    if (kind === 'kick') {
+      const osc = ctx.createOscillator();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(150, t0);
+      osc.frequency.exponentialRampToValueAtTime(46, t0 + 0.14);
+      const amp = ctx.createGain();
+      amp.gain.setValueAtTime(0.0001, t0);
+      amp.gain.exponentialRampToValueAtTime(0.75 * v, t0 + 0.005);
+      amp.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.32);
+      osc.connect(amp);
+      amp.connect(this.dry);
+      osc.start(t0);
+      osc.stop(t0 + 0.35);
+    } else if (kind === 'clap') {
+      for (const dt of [0, 0.011, 0.023]) this._noiseBurst(t0 + dt, { type: 'bandpass', freq: 1500, q: 0.9, decay: dt === 0.023 ? 0.16 : 0.03, peak: 0.32 * v, pan });
+    } else if (kind === 'hat') {
+      this._noiseBurst(t0, { type: 'highpass', freq: 7200, q: 0.6, decay: 0.05, peak: 0.13 * v, pan: pan + 0.2 });
+    } else {
+      const osc = ctx.createOscillator();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(980, t0);
+      osc.frequency.exponentialRampToValueAtTime(760, t0 + 0.05);
+      const amp = ctx.createGain();
+      amp.gain.setValueAtTime(0.0001, t0);
+      amp.gain.exponentialRampToValueAtTime(0.32 * v, t0 + 0.003);
+      amp.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.09);
+      osc.connect(amp);
+      this._out(amp, pan - 0.15);
+      osc.start(t0);
+      osc.stop(t0 + 0.12);
+    }
+  }
+
+  /** Metronome tick (accented on the first beat of a bar). */
+  click(accent = false, { when = 0 } = {}) {
+    if (!this.ready || this.muted) return;
+    const ctx = this.ctx;
+    const t0 = ctx.currentTime + Math.max(0, when);
+    const osc = ctx.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.value = accent ? 1760 : 1320;
+    const amp = ctx.createGain();
+    amp.gain.setValueAtTime(0.0001, t0);
+    amp.gain.exponentialRampToValueAtTime(accent ? 0.16 : 0.1, t0 + 0.002);
+    amp.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.05);
+    osc.connect(amp);
+    amp.connect(this.dry);
+    osc.start(t0);
+    osc.stop(t0 + 0.07);
+  }
+
   /** Named care/UI sounds. */
   sfx(name) {
     const seq = (notes, step, opts) => notes.forEach((m, i) => this.pluck(m, { when: i * step, ...opts }));
@@ -169,6 +260,12 @@ export class StudioAudio {
         break;
       case 'decline': this.pluck(67, { duration: 0.12, velocity: 0.25 }); break;
       case 'tap': this.glide(520, 660, { duration: 0.04, velocity: 0.12, type: 'triangle' }); break;
+      case 'lesson': seq([72, 79, 76], 0.09, { duration: 0.22, velocity: 0.36 }); break;
+      case 'love': seq([76, 81, 84, 88], 0.07, { duration: 0.28, velocity: 0.42 }); break;
+      case 'hang':
+        this.glide(330, 520, { duration: 0.12, velocity: 0.3, type: 'triangle' });
+        seq([79, 84], 0.1, { duration: 0.3, velocity: 0.36 });
+        break;
       default: break;
     }
   }

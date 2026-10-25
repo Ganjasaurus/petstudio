@@ -83,6 +83,7 @@ const ACTIVITY_DECAY = Object.freeze({
   playing_music: { curiosity: 0 },
   drawing: { curiosity: 0 },
   listening: { curiosity: 0, bond: 0 },
+  lesson: { curiosity: 0, bond: 0 },
 });
 
 // ---------------------------------------------------------------------------
@@ -146,10 +147,33 @@ export const NAME_IDEAS = Object.freeze([
 // ---------------------------------------------------------------------------
 // Activities & expressions
 // ---------------------------------------------------------------------------
-export const ACTIVITIES = Object.freeze(['idle', 'walking', 'eating', 'bathing', 'sleeping', 'playing_music', 'drawing', 'listening']);
+export const ACTIVITIES = Object.freeze(['idle', 'walking', 'eating', 'bathing', 'sleeping', 'playing_music', 'drawing', 'listening', 'lesson']);
 export const STATION_ACTIVITIES = Object.freeze(['eating', 'bathing', 'sleeping', 'playing_music', 'drawing', 'listening']);
 export const CREATIVE_ACTIVITIES = Object.freeze(['playing_music', 'drawing']);
 export const EXPRESSIONS = Object.freeze(['neutral', 'happy', 'curious', 'sleepy', 'asleep', 'proud', 'excited', 'pouty']);
+
+/**
+ * A creation plan attached to an activity: which piece to perform (`ref`, an
+ * opaque id owned by the creation flow), its kind, a fixed duration and why
+ * (`attempt` = its take on a lesson, `variation` = a retry, `replay` = from
+ * the gallery). The simulation only schedules it; it never invents content.
+ */
+export const PLAN_KINDS = Object.freeze(['music', 'drawing']);
+export const PLAN_MODES = Object.freeze(['attempt', 'variation', 'replay']);
+const PLAN_STATION = Object.freeze({ music: 'music', drawing: 'easel' });
+const REF_RE = /^[a-z0-9:_-]{1,64}$/i;
+/** Per-second gains while the pet attends a lesson (time spent teaching it). */
+const LESSON_GAIN = Object.freeze({ curiosity: 2.4, mood: 0.5, bond: 0.5 });
+
+export function sanitizePlan(p) {
+  if (!p || typeof p !== 'object' || typeof p.ref !== 'string' || !REF_RE.test(p.ref) || !PLAN_KINDS.includes(p.kind)) return null;
+  return {
+    ref: p.ref,
+    kind: p.kind,
+    duration: clampNum(p.duration, 2, 120, 12),
+    mode: PLAN_MODES.includes(p.mode) ? p.mode : 'attempt',
+  };
+}
 
 /**
  * Per-activity rules: duration range (s), per-second need gains while active,
@@ -253,6 +277,7 @@ export function selectionTemperature(traits) {
 /** Human-readable status: `text` for wide screens, `short` for narrow ones. */
 export function describeActivity(activity) {
   const st = activity?.station ? STATIONS[activity.station] : null;
+  const mode = activity?.plan?.mode ?? null;
   switch (activity?.type) {
     case 'walking':
       if (!st || activity.pending === 'idle') return { text: 'Wandering around', short: 'Wandering', icon: 'walk' };
@@ -260,9 +285,19 @@ export function describeActivity(activity) {
     case 'eating': return { text: 'Having a snack', short: 'Snacking', icon: 'food' };
     case 'bathing': return { text: 'Splashing in the bath', short: 'Bath time', icon: 'bath' };
     case 'sleeping': return { text: 'Napping in its nook', short: 'Napping', icon: 'sleep' };
-    case 'playing_music': return { text: 'Playing music', short: 'Playing music', icon: 'music' };
-    case 'drawing': return { text: 'Drawing at the easel', short: 'Drawing', icon: 'draw' };
+    case 'playing_music':
+      if (mode === 'replay') return { text: 'Performing a saved song', short: 'Performing', icon: 'music' };
+      if (mode) return { text: 'Playing its own take on your tune', short: 'Playing its take', icon: 'music' };
+      return { text: 'Playing music', short: 'Playing music', icon: 'music' };
+    case 'drawing':
+      if (mode === 'replay') return { text: 'Redrawing a saved picture', short: 'Redrawing', icon: 'draw' };
+      if (mode) return { text: 'Drawing its own take on your drawing', short: 'Drawing its take', icon: 'draw' };
+      return { text: 'Drawing at the easel', short: 'Drawing', icon: 'draw' };
     case 'listening': return { text: 'Listening on the rug', short: 'Listening', icon: 'listen' };
+    case 'lesson':
+      return activity?.plan?.kind === 'drawing'
+        ? { text: 'Studying your drawing', short: 'Studying', icon: 'teach' }
+        : { text: 'Listening to your tune', short: 'Listening', icon: 'listen' };
     default: return { text: 'Hanging out', short: 'Hanging out', icon: 'idle' };
   }
 }
@@ -327,6 +362,7 @@ function sanitizeActivity(a) {
   if (STATION_ACTIVITIES.includes(type) && station !== ACTIVITY_STATION[type]) station = ACTIVITY_STATION[type];
   if (type === 'walking' && pending && STATION_ACTIVITIES.includes(pending)) station = ACTIVITY_STATION[pending];
   if (type === 'walking' && !station && pending !== 'idle') type = 'idle';
+  if (type === 'lesson') station = null;
   return {
     type,
     station,
@@ -335,6 +371,7 @@ function sanitizeActivity(a) {
     elapsed: clampNum(src.elapsed, 0, 600, 0),
     duration: clampNum(src.duration, 0, 600, 0),
     seed: Number.isInteger(src.seed) ? src.seed >>> 0 : 0,
+    plan: sanitizePlan(src.plan),
   };
 }
 
@@ -378,6 +415,8 @@ function sanitizeDrawing(d) {
     complete: d.complete === true,
     startedAt: Number.isFinite(d.startedAt) ? d.startedAt : null,
     style: sanitizeDrawingStyle(d.style),
+    // Planned drawings (lesson attempts, gallery replays) reference their content by id.
+    ref: typeof d.ref === 'string' && REF_RE.test(d.ref) ? d.ref : null,
   };
 }
 
@@ -559,11 +598,13 @@ export class PetState {
     this.lastCompleted = null;
     this.lastStation = r.lastStation;
     this.path = [];
-    this.activity = { type: 'idle', station: null, pending: null, source: 'auto', elapsed: 0, duration: 2, seed: 0 };
+    this.activity = { type: 'idle', station: null, pending: null, source: 'auto', elapsed: 0, duration: 2, seed: 0, plan: null };
     this._listeners = new Set();
     this._lowFlags = {};
     this._lastPetAt = -1e9;
     this._lastPraiseAt = -1e9;
+    this._lastLoveAt = -1e9;
+    this._lastNoticeAt = -1e9;
     this._refusedLast = false;
     this._reactionSeq = 0;
 
@@ -589,7 +630,7 @@ export class PetState {
   /** Restores a persisted activity without consuming randomness (so reloads stay deterministic). */
   _restoreActivity(a) {
     if (a.type === 'walking' && a.station && a.pending && a.pending !== 'idle') {
-      this._commandStation(a.station, a.source);
+      this._commandStation(a.station, a.source, a.plan);
       return;
     }
     if (STATION_ACTIVITIES.includes(a.type) && a.station) {
@@ -601,13 +642,15 @@ export class PetState {
       this.activity = {
         type: a.type, station: a.station, pending: null, source: a.source,
         elapsed: Math.min(a.elapsed, duration), duration, seed: a.seed,
+        plan: CREATIVE_ACTIVITIES.includes(a.type) ? a.plan : null,
       };
       return;
     }
+    // Idle, and short lessons interrupted by a reload, restart as idle.
     const idleFor = a.type === 'idle' && a.duration > 0 ? a.duration : 1.5;
     this.activity = {
       type: 'idle', station: nearestStation(this.position), pending: null, source: 'auto',
-      elapsed: a.type === 'idle' ? Math.min(a.elapsed, idleFor) : 0, duration: idleFor, seed: 0,
+      elapsed: a.type === 'idle' ? Math.min(a.elapsed, idleFor) : 0, duration: idleFor, seed: 0, plan: null,
     };
   }
 
@@ -681,6 +724,7 @@ export class PetState {
       case 'eating':
       case 'bathing': return 'happy';
       case 'listening': return 'curious';
+      case 'lesson': return 'curious';
       default: break;
     }
     if (n.energy < 22) return 'sleepy';
@@ -695,6 +739,10 @@ export class PetState {
     const r = this.reaction;
     if (r && r.timer > 0 && r.bubble) return { icon: r.bubble, kind: 'speech', key: `r:${r.id}:${r.bubble}` };
     const a = this.activity;
+    if (a.type === 'lesson') {
+      const icon = a.plan?.kind === 'drawing' ? 'idea' : 'listen';
+      return { icon, kind: 'thought', key: `l:${icon}` };
+    }
     if (a.type === 'walking' && a.station && a.pending !== 'idle') {
       return { icon: STATIONS[a.station].icon, kind: 'thought', key: `w:${a.station}` };
     }
@@ -758,6 +806,8 @@ export class PetState {
       if (byPlayer && rule.playerGain) {
         for (const [k, v] of Object.entries(rule.playerGain)) this.needs[k] += v * dt;
       }
+    } else if (type === 'lesson') {
+      for (const [k, v] of Object.entries(LESSON_GAIN)) this.needs[k] += v * dt;
     }
     const target = moodTarget(this.needs, t, type);
     const rate = 0.03 * (1 + 1.2 * t.dramatic - 0.5 * t.calm);
@@ -773,6 +823,10 @@ export class PetState {
     }
     if (a.type === 'walking') {
       this._walk(dt);
+      return;
+    }
+    if (a.type === 'lesson') {
+      if (a.elapsed >= a.duration) this._finishLesson();
       return;
     }
     const rule = ACTIVITY_RULES[a.type];
@@ -810,7 +864,7 @@ export class PetState {
 
   _arrive() {
     const a = this.activity;
-    if (a.station && a.pending && a.pending !== 'idle') this._startStationActivity(a.station, a.source);
+    if (a.station && a.pending && a.pending !== 'idle') this._startStationActivity(a.station, a.source, a.plan);
     else this._setIdle();
   }
 
@@ -824,6 +878,7 @@ export class PetState {
       elapsed: 0,
       duration: next.duration ?? 0,
       seed: (next.seed ?? 0) >>> 0,
+      plan: next.plan ? sanitizePlan(next.plan) : null,
     };
     this.path = path.map((p) => ({ x: p.x, z: p.z }));
     this.emit('activity', {
@@ -834,6 +889,7 @@ export class PetState {
       source: this.activity.source,
       seed: this.activity.seed,
       duration: this.activity.duration,
+      plan: this.activity.plan ? { ...this.activity.plan } : null,
     });
   }
 
@@ -844,21 +900,24 @@ export class PetState {
     this._setActivity({ type: 'idle', station: nearestStation(this.position), source: 'auto', duration });
   }
 
-  _startStationActivity(stationId, source) {
+  _startStationActivity(stationId, source, plan = null) {
     const st = STATIONS[stationId];
     const rule = ACTIVITY_RULES[st.activity];
     this.position = { x: st.anchor.x, z: st.anchor.z };
     this.heading = st.facing;
-    const duration = rule.duration[0] + (rule.duration[1] - rule.duration[0]) * this.rng();
+    // Randomness is drawn identically with or without a plan, so plans never shift the seeded sequence.
+    let duration = rule.duration[0] + (rule.duration[1] - rule.duration[0]) * this.rng();
     const seed = Math.floor(this.rng() * 4294967296) >>> 0;
+    const usable = plan && CREATIVE_ACTIVITIES.includes(st.activity) && PLAN_STATION[plan.kind] === stationId ? plan : null;
+    if (usable) duration = usable.duration;
     if (st.activity === 'eating') this.counters.meals++;
     if (st.activity === 'bathing') this.counters.baths++;
     if (st.activity === 'sleeping') this.counters.naps++;
     if (st.activity === 'drawing') {
-      this.currentDrawing = { seed, progress: 0, complete: false, startedAt: this._clockFn(), style: null };
+      this.currentDrawing = { seed, progress: 0, complete: false, startedAt: this._clockFn(), style: null, ref: usable?.ref ?? null };
     }
     this.emit('arrive', { station: stationId });
-    this._setActivity({ type: st.activity, station: stationId, source, duration, seed });
+    this._setActivity({ type: st.activity, station: stationId, source, duration, seed, plan: usable });
   }
 
   /**
@@ -881,22 +940,25 @@ export class PetState {
       if (a.type === 'drawing') this.counters.drawings++;
       if (a.type === 'playing_music') this.counters.songs++;
       if (CREATIVE_ACTIVITIES.includes(a.type)) {
-        this.lastCompleted = { activity: a.type, at: this.clock, seed: a.seed, praised: false };
+        this.lastCompleted = { activity: a.type, at: this.clock, seed: a.seed, praised: false, ref: a.plan?.ref ?? null };
       }
     }
     if (st && distance(st.anchor, st.approach) > 0.05) this.position = { ...st.approach }; // hop back out
     this.lastStation = a.station;
     this.emit('activity:end', {
       activity: a.type, station: a.station, completed: !!completed, interrupted: !!interrupted,
-      elapsed: a.elapsed, progress, seed: a.seed,
+      elapsed: a.elapsed, progress, seed: a.seed, plan: a.plan ? { ...a.plan } : null,
     });
     if (toIdle) this._setIdle();
     if (completed && !silent) {
       const n = this.appearance.name;
+      const mode = a.plan?.mode;
       if (a.type === 'drawing') {
-        this._react('complete', { expression: 'proud', emote: 'jump', bubble: 'star', message: `${n} finished a drawing!` });
+        const message = mode === 'replay' ? `${n} redrew it from the gallery!` : mode ? `${n} finished its own take!` : `${n} finished a drawing!`;
+        this._react('complete', { expression: 'proud', emote: 'jump', bubble: 'star', message });
       } else if (a.type === 'playing_music') {
-        this._react('complete', { expression: 'proud', emote: 'jump', bubble: 'note', message: `${n} played a little tune!` });
+        const message = mode === 'replay' ? `${n} performed it from the gallery!` : mode ? `${n} played its own take!` : `${n} played a little tune!`;
+        this._react('complete', { expression: 'proud', emote: 'jump', bubble: 'note', message });
       } else if (a.type === 'sleeping') {
         this._react('complete', { expression: 'happy', emote: 'stretch', message: `${n} woke up refreshed.` });
       } else {
@@ -905,22 +967,41 @@ export class PetState {
     }
   }
 
-  /** Leaves whatever station the pet is using (interrupting it). */
+  /** Leaves whatever station the pet is using, or the lesson it attends (interrupting it). */
   _leaveCurrent() {
-    if (STATION_ACTIVITIES.includes(this.activity.type)) {
+    const a = this.activity;
+    if (STATION_ACTIVITIES.includes(a.type)) {
       this._endActivity({ interrupted: true, toIdle: false, silent: true });
+    } else if (a.type === 'lesson') {
+      this.emit('activity:end', {
+        activity: 'lesson', station: null, completed: false, interrupted: true,
+        elapsed: a.elapsed, progress: a.duration > 0 ? clamp(a.elapsed / a.duration, 0, 1) : 0, seed: a.seed,
+        plan: a.plan ? { ...a.plan } : null,
+      });
     }
   }
 
-  _commandStation(stationId, source) {
+  /** The lesson ran its course: off to the station to perform the planned attempt. */
+  _finishLesson() {
+    const a = this.activity;
+    const plan = a.plan;
+    this.emit('activity:end', {
+      activity: 'lesson', station: null, completed: true, interrupted: false,
+      elapsed: a.elapsed, progress: 1, seed: a.seed, plan: plan ? { ...plan } : null,
+    });
+    if (plan) this._commandStation(PLAN_STATION[plan.kind], 'player', plan, { leave: false });
+    else this._setIdle();
+  }
+
+  _commandStation(stationId, source, plan = null, { leave = true } = {}) {
     const st = STATIONS[stationId];
-    this._leaveCurrent();
+    if (leave) this._leaveCurrent();
     if (distance(this.position, st.approach) < 0.12) {
-      this._startStationActivity(stationId, source);
+      this._startStationActivity(stationId, source, plan);
       return;
     }
     const path = planPath(this.position, st.approach, st.entry ?? []);
-    this._setActivity({ type: 'walking', station: stationId, pending: st.activity, source }, path);
+    this._setActivity({ type: 'walking', station: stationId, pending: st.activity, source, plan }, path);
   }
 
   _autonomousChoice() {
@@ -1155,6 +1236,85 @@ export class PetState {
     return this.goTo('easel');
   }
 
+  // ----- teaching (scheduling only: content comes from the creation flow) ----------
+  /**
+   * The player demonstrates something: the pet stops, faces them and attends
+   * for `listenSeconds`, then walks to the matching station and performs the
+   * planned piece (`ref`) for `performSeconds`. Lessons are never refused, but
+   * a napping or exhausted pet cannot take one.
+   */
+  teachLesson({ kind, ref, listenSeconds = 5, performSeconds = 12 } = {}) {
+    const n = this.appearance.name;
+    const plan = sanitizePlan({ ref, kind, duration: performSeconds, mode: 'attempt' });
+    if (!plan) return { type: 'reaction', kind: 'lesson', ok: false, reason: 'bad-plan', message: 'That lesson could not be started.' };
+    if (this.isAsleep) return this._decline('lesson', 'asleep', `Shh… ${n} is napping. Wake it first, then teach.`, 'asleep', null);
+    if (this.needs.energy < 12) return this._decline('lesson', 'too-tired', `${n} is too sleepy to learn right now. Try Rest.`, 'sleepy');
+    this._leaveCurrent();
+    this._setActivity({ type: 'lesson', station: null, source: 'player', duration: clampNum(listenSeconds, 1.5, 30, 5), plan });
+    this._bump('bond', 1.5);
+    const music = kind === 'music';
+    return this._react('lesson', {
+      expression: 'curious', emote: 'nod', bubble: music ? 'listen' : 'idea',
+      message: music ? `${n} perks up its ears and listens closely.` : `${n} studies your drawing closely.`,
+      duration: 2.4,
+    });
+  }
+
+  /**
+   * After finishing a piece the pet lingers (idle, facing you) a little
+   * longer before choosing something new, so there is time to react to it.
+   */
+  lingerIdle(seconds) {
+    const a = this.activity;
+    if (a.type !== 'idle' || !(seconds > 0)) return false;
+    a.duration = Math.max(a.duration, a.elapsed + Math.min(seconds, 60));
+    return true;
+  }
+
+  /** Walks to the Music Corner or Easel to perform a planned piece (gallery replays, retries). */
+  performCreation({ kind, ref, duration = 12, mode = 'replay', message: custom = null } = {}) {
+    const n = this.appearance.name;
+    const plan = sanitizePlan({ ref, kind, duration, mode });
+    const action = kind === 'drawing' ? 'draw' : 'music';
+    if (!plan) return { type: 'reaction', kind: action, ok: false, reason: 'bad-plan', message: 'That piece could not be started.' };
+    if (this.isAsleep) return this._decline(action, 'asleep', `Shh… ${n} is napping. Wake it first.`, 'asleep', null);
+    if (this.needs.energy < 12) return this._decline(action, 'too-tired', `${n} is too sleepy for that. Try Rest.`, 'sleepy');
+    const stationId = PLAN_STATION[plan.kind];
+    this._commandStation(stationId, 'player', plan);
+    let message;
+    if (typeof custom === 'string' && custom) message = custom.slice(0, 140);
+    else if (plan.mode === 'variation') message = `${n} tries another idea!`;
+    else if (plan.mode === 'replay') message = kind === 'drawing' ? `${n} heads to the easel to redraw it.` : `${n} heads to the Music Corner to perform it.`;
+    else message = this._flavor(action);
+    return this._react(action, { expression: 'excited', emote: 'hop', bubble: STATIONS[stationId].icon, message });
+  }
+
+  /** "Love It" on a creation: a warm bond and mood boost (diminishing when spammed). */
+  receiveLove() {
+    const n = this.appearance.name;
+    const since = this.clock - this._lastLoveAt;
+    this._lastLoveAt = this.clock;
+    const f = since < 1.2 ? 0.35 : since < 4 ? 0.7 : 1;
+    if (this.isAsleep) {
+      this._bump('bond', 1.5 * f);
+      return this._react('love', { expression: 'asleep', bubble: 'heart', message: `${n} smiles in its sleep.`, duration: 1.8 });
+    }
+    this._bump('bond', 5 * f);
+    this._bump('mood', 8 * f * (1 + 0.6 * this.traits.dramatic));
+    const creatingNow = CREATIVE_ACTIVITIES.includes(this.activity.type);
+    return this._react('love', {
+      expression: 'proud', emote: creatingNow ? 'nod' : 'jump', bubble: 'heart', message: `${n} glows with pride!`,
+    });
+  }
+
+  /** Small attentive reaction while the player plays or draws in the workshop (throttled, silent). */
+  notice(kind = 'music') {
+    if (this.isAsleep || this.clock - this._lastNoticeAt < 1.4) return null;
+    if (this.activity.type !== 'idle' && this.activity.type !== 'lesson') return null;
+    this._lastNoticeAt = this.clock;
+    return this._react('notice', { expression: 'curious', emote: 'nod', bubble: kind === 'drawing' ? 'draw' : 'note', duration: 1.4 });
+  }
+
   // ----- customisation -----------------------------------------------------------------
   setAppearance(partial) {
     this.appearance = sanitizeAppearance({ ...this.appearance, ...(partial ?? {}) });
@@ -1232,6 +1392,7 @@ export class PetState {
       activity: {
         type: a.type, station: a.station, pending: a.pending, source: a.source,
         elapsed: round(a.elapsed, 2), duration: round(a.duration, 2), seed: a.seed >>> 0,
+        plan: a.plan ? { ...a.plan } : null,
       },
       position: { x: round(this.position.x, 3), z: round(this.position.z, 3) },
       heading: round(this.heading, 3),
@@ -1259,6 +1420,7 @@ export class PetState {
         type: a.type, station: a.station, pending: a.pending, source: a.source,
         elapsed: round(a.elapsed, 2), duration: round(a.duration, 2), seed: a.seed,
         progress: a.duration > 0 ? clamp(a.elapsed / a.duration, 0, 1) : 0,
+        plan: a.plan ? { ...a.plan } : null,
       },
       status: describeActivity(a),
       asleep: this.isAsleep,

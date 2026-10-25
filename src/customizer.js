@@ -44,8 +44,12 @@ export class Customizer {
     return this.dialog.open;
   }
 
+  /** Resting rect for camera framing (layout box: ignores the slide-in transform). */
   panelRect() {
-    return this.dialog.getBoundingClientRect();
+    const d = this.dialog;
+    if (!d.open) return { x: 0, y: 0, left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0 };
+    const { offsetLeft: left, offsetTop: top, offsetWidth: width, offsetHeight: height } = d;
+    return { x: left, y: top, left, top, width, height, right: left + width, bottom: top + height };
   }
 
   _build() {
