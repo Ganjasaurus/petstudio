@@ -15,11 +15,17 @@
  *    carries an explicit `label` so a trainer cannot mistake one for another.
  *  - prefs: the style guidance accumulated from nudges (energy, order).
  *
- * Retention: at most 12 lessons per kind (oldest dropped first), 200 signals
- * and ~600 KB serialised. Pure ES module; persistence via persist.js.
+ * Lessons have a source. 'player' lessons are your demonstrations (weight
+ * 1.0). 'social' lessons (Iteration 4) are a visiting friend's demonstration
+ * kept as inspiration with a bounded weight of 0.5, so the pet can practise
+ * it in Sleep Practice without it outweighing what you taught.
+ *
+ * Retention: at most 12 lessons per kind (social lessons are dropped before
+ * yours, and at most 3 social lessons per kind are kept), 200 signals and
+ * ~600 KB serialised. Pure ES module; persistence via persist.js.
  */
 import { sanitizePhrase, sanitizeDrawing, phraseIsEmpty, drawingIsEmpty } from './teaching-core.js';
-import { sanitizeStyle, sanitizeModelTag, applyNudge, NUDGE_IDS } from './creative-engine.js';
+import { sanitizeStyle, sanitizeModelTag, sanitizeSocialTag, applyNudge, NUDGE_IDS } from './creative-engine.js';
 import { loadVersioned, saveVersioned, removeKeys } from './persist.js';
 
 export const TEACH_SCHEMA = 'petstudio.teach';
@@ -28,12 +34,16 @@ export const TEACH_KEY = 'petstudio.teach.v1';
 export const TEACH_BACKUP_KEY = 'petstudio.teach.v1.bak';
 export const TEACH_FUTURE_KEY = 'petstudio.teach.future';
 export const TEACH_ORPHAN_KEY = 'petstudio.teach.orphan';
-export const MEMORY_LIMITS = Object.freeze({ lessonsPerKind: 12, attemptsPerLesson: 12, signals: 200, maxBytes: 600_000 });
+export const MEMORY_LIMITS = Object.freeze({ lessonsPerKind: 12, socialPerKind: 3, attemptsPerLesson: 12, signals: 200, maxBytes: 600_000 });
 export const LESSON_KINDS = Object.freeze(['music', 'drawing']);
+export const LESSON_SOURCES = Object.freeze(['player', 'social']);
+/** A visiting friend's demonstration weighs half as much as one of yours in training. */
+export const SOCIAL_LESSON_WEIGHT = 0.5;
 /** Signal kind -> semantic label (what a trainer may and may not infer from it). */
 export const SIGNAL_LABELS = Object.freeze({ love: 'preference', nudge: 'direction', variation: 'request', perform: 'request' });
-export const PLAN_MODES = Object.freeze(['attempt', 'variation', 'replay']);
-const PLAN_ORIGINS = Object.freeze(['attempt', 'starter', 'taught']);
+export const PLAN_MODES = Object.freeze(['attempt', 'variation', 'replay', 'social']);
+const PLAN_ORIGINS = Object.freeze(['attempt', 'starter', 'taught', 'social']);
+const SNAP_ID_RE = /^[a-z0-9:_-]{3,64}$/i;
 
 const ID_RE = /^[a-z0-9-]{3,64}$/i;
 const REF_RE = /^[a-z0-9:_-]{1,64}$/i;
@@ -51,11 +61,26 @@ export function sanitizeText(text, max) {
 const sanitizeData = (kind, data) => (kind === 'music' ? sanitizePhrase(data) : sanitizeDrawing(data));
 const isEmptyData = (kind, data) => (kind === 'music' ? phraseIsEmpty(data) : drawingIsEmpty(data));
 
+/** Who a social lesson came from: the visitor's name and its snapshot / local identity. */
+export function sanitizeLessonFrom(f) {
+  if (!f || typeof f !== 'object') return null;
+  const name = sanitizeText(f.name, 16);
+  if (!name) return null;
+  return {
+    name,
+    snapshotId: typeof f.snapshotId === 'string' && SNAP_ID_RE.test(f.snapshotId) ? f.snapshotId : null,
+    visitorId: typeof f.visitorId === 'string' && SNAP_ID_RE.test(f.visitorId) ? f.visitorId : null,
+  };
+}
+
 function sanitizeLesson(l) {
   if (!l || typeof l !== 'object' || !LESSON_KINDS.includes(l.kind) || !isId(l.id)) return null;
   const demo = sanitizeData(l.kind, l.demo);
   if (isEmptyData(l.kind, demo)) return null;
   const c = l.context && typeof l.context === 'object' ? l.context : {};
+  const from = sanitizeLessonFrom(l.from);
+  // A social lesson always names its visitor and never weighs more than SOCIAL_LESSON_WEIGHT.
+  const social = l.source === 'social' && !!from;
   return {
     id: l.id,
     kind: l.kind,
@@ -63,6 +88,9 @@ function sanitizeLesson(l) {
     session: isId(l.session) ? l.session : null,
     templateId: typeof l.templateId === 'string' && TEMPLATE_RE.test(l.templateId) ? l.templateId : null,
     title: sanitizeText(l.title, 48) || null,
+    source: social ? 'social' : 'player',
+    weight: social ? clamp(Number.isFinite(l.weight) ? l.weight : SOCIAL_LESSON_WEIGHT, 0.05, SOCIAL_LESSON_WEIGHT) : 1,
+    from: social ? from : null,
     demo,
     context: { style: sanitizeStyle(c.style), petName: sanitizeText(c.petName, 16) || null },
     attempts: Array.isArray(l.attempts) ? l.attempts.filter(isId).slice(-MEMORY_LIMITS.attemptsPerLesson) : [],
@@ -104,6 +132,7 @@ export function sanitizePlan(p) {
     saveOnComplete: p.saveOnComplete !== false,
     generator: typeof p.generator === 'string' && GENERATOR_RE.test(p.generator) ? p.generator : null,
     model: sanitizeModelTag(p.model),
+    social: sanitizeSocialTag(p.social),
     createdAt: Number.isFinite(p.createdAt) ? p.createdAt : null,
     data,
   };
@@ -192,6 +221,41 @@ export class TeachingMemory {
     return lesson;
   }
 
+  /**
+   * Keeps a visiting friend's demonstration as inspiration: a social lesson
+   * with the bounded weight SOCIAL_LESSON_WEIGHT (0.5x one of your lessons).
+   * The same demonstration from the same friend is kept once (returned with
+   * `existing: true`). Returns { lesson, existing } or null for an empty demo.
+   */
+  addSocialLesson(kind, demo, { from, title = null, petName = null } = {}) {
+    if (!LESSON_KINDS.includes(kind)) return null;
+    const who = sanitizeLessonFrom(from);
+    if (!who) return null;
+    const data = sanitizeData(kind, demo);
+    if (isEmptyData(kind, data)) return null;
+    const key = JSON.stringify(data);
+    const same = this.lessons.find((l) => l.source === 'social' && l.kind === kind && l.from?.name === who.name && JSON.stringify(l.demo) === key);
+    if (same) return { lesson: same, existing: true };
+    const lesson = sanitizeLesson({
+      id: this._id('lesson'),
+      kind,
+      createdAt: this._clock(),
+      session: this.sessionId,
+      title,
+      source: 'social',
+      weight: SOCIAL_LESSON_WEIGHT,
+      from: who,
+      demo: data,
+      context: { style: this.prefs, petName },
+      attempts: [],
+    });
+    if (!lesson) return null;
+    this.lessons.push(lesson);
+    this._retain();
+    this._changed('lesson');
+    return { lesson: this.getLesson(lesson.id) ?? lesson, existing: false };
+  }
+
   getLesson(id) {
     return this.lessons.find((l) => l.id === id) ?? null;
   }
@@ -242,16 +306,26 @@ export class TeachingMemory {
     return true;
   }
 
+  /** Retention: at most socialPerKind social lessons; over the per-kind cap, social lessons go first, then the oldest. */
   _retain() {
+    const dropIds = (ids) => {
+      const drop = new Set(ids);
+      this.lessons = this.lessons.filter((l) => !drop.has(l.id));
+    };
     for (const kind of LESSON_KINDS) {
+      const social = this.lessons.filter((l) => l.kind === kind && l.source === 'social');
+      if (social.length > MEMORY_LIMITS.socialPerKind) dropIds(social.slice(0, social.length - MEMORY_LIMITS.socialPerKind).map((l) => l.id));
       const ofKind = this.lessons.filter((l) => l.kind === kind);
       const extra = ofKind.length - MEMORY_LIMITS.lessonsPerKind;
       if (extra > 0) {
-        const drop = new Set(ofKind.slice(0, extra).map((l) => l.id));
-        this.lessons = this.lessons.filter((l) => !drop.has(l.id));
+        const order = [...ofKind.filter((l) => l.source === 'social'), ...ofKind.filter((l) => l.source !== 'social')];
+        dropIds(order.slice(0, extra).map((l) => l.id));
       }
     }
-    while (this.lessons.length > 1 && JSON.stringify(this.toJSON()).length > MEMORY_LIMITS.maxBytes) this.lessons.shift();
+    while (this.lessons.length > 1 && JSON.stringify(this.toJSON()).length > MEMORY_LIMITS.maxBytes) {
+      const victim = this.lessons.find((l) => l.source === 'social') ?? this.lessons[0];
+      dropIds([victim.id]);
+    }
   }
 
   toJSON(now = this._clock()) {
@@ -274,6 +348,7 @@ export class TeachingMemory {
   snapshot() {
     const summary = (l) => ({
       id: l.id, kind: l.kind, createdAt: l.createdAt, session: l.session, templateId: l.templateId, title: l.title,
+      source: l.source, weight: l.weight, from: l.from ? { ...l.from } : null,
       events: l.kind === 'music' ? l.demo.notes.length + l.demo.hits.length : l.demo.strokes.length,
       attempts: [...l.attempts],
     });
@@ -281,7 +356,12 @@ export class TeachingMemory {
       kind: 'teaching-memory (replay buffer); storing examples does not change any model parameter',
       petId: this.petId,
       sessionId: this.sessionId,
-      lessons: { music: this.lessons.filter((l) => l.kind === 'music').length, drawing: this.lessons.filter((l) => l.kind === 'drawing').length, list: this.lessons.map(summary) },
+      lessons: {
+        music: this.lessons.filter((l) => l.kind === 'music').length,
+        drawing: this.lessons.filter((l) => l.kind === 'drawing').length,
+        social: this.lessons.filter((l) => l.source === 'social').length,
+        list: this.lessons.map(summary),
+      },
       signals: { total: this.signals.length, recent: this.signals.slice(-10).map((s) => ({ ...s })) },
       prefs: { ...this.prefs },
       nudgeCounts: { ...this.nudgeCounts },

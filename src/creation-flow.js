@@ -11,6 +11,10 @@
  *   love / variation / nudge(id) -> structured feedback on the current
  *                         creation (the "subject" shown in the feedback bar).
  *
+ *   performSocial(...) -> (Iteration 4) the pet performs a piece made with a
+ *                         visiting friend: the second half of a duet, or its
+ *                         turns in a co-drawn picture. Saved as "Made Together".
+ *
  * The pet's own starter songs and drawings become subjects too, so they can
  * be loved, varied or saved. Pure ES module (no DOM, no Three.js). Nothing
  * here learns: feedback is recorded as labelled signals, and style nudges
@@ -21,7 +25,7 @@ import {
   sanitizePhrase, sanitizeDrawing, phraseIsEmpty, drawingIsEmpty, phraseSeconds, drawingLength,
   MUSIC_TEMPLATES, DRAWING_TEMPLATES,
 } from './teaching-core.js';
-import { AuthoredCreativeEngine, NUDGES, styleTags, sanitizeStyle } from './creative-engine.js';
+import { AuthoredCreativeEngine, NUDGES, styleTags, sanitizeStyle, sanitizeSocialTag, socialLabel } from './creative-engine.js';
 import { hashSeed } from './rng.js';
 
 export const FLOW = Object.freeze({
@@ -188,7 +192,7 @@ export class CreationFlow {
       item = this.gallery.add({
         kind: s.kind, origin: s.origin, title: s.title, data: s.data, lessonId: s.lessonId, parentId: s.parentId,
         petId: this.pet.id, petName: this.pet.name, seed: s.seed, generator: s.generator, style: s.style,
-        tags: s.tags, favorite: favorite || !!s.loved, model: s.model ?? null,
+        tags: s.tags, favorite: favorite || !!s.loved, model: s.model ?? null, social: s.social ?? null,
       });
       s.itemId = item?.id ?? null;
       if (item && s.lessonId && item.origin === 'attempt') this.memory.linkAttempt(s.lessonId, item.id);
@@ -232,6 +236,7 @@ export class CreationFlow {
   _retry({ tag = null, signalKind = null } = {}) {
     const s = this.subject;
     if (!s || !['performing', 'done'].includes(s.phase)) return { ok: false, reason: 'nothing', message: 'Wait for your pet to start creating.' };
+    if (s.social) return { ok: false, reason: 'social', message: 'Made together with a friend: jam or draw together again from the Visit sheet.' };
     const lesson = s.lessonId ? this.memory.getLesson(s.lessonId) : null;
     const source = lesson?.demo ?? s.lessonData ?? s.data; // riff on the original lesson, not on a riff
     const seed = this._seed();
@@ -274,6 +279,28 @@ export class CreationFlow {
       seed: Number.isInteger(seed) ? seed >>> 0 : this._seed(), style: style ? sanitizeStyle(style) : null,
       tags: styleTags(style ?? {}), saveOnComplete: true, generator, model, data: clean,
     }, { lessonData: lesson?.demo ?? null, sourceTitle: base }, `${this.pet.name} shows off what it practised!`);
+  }
+
+  /**
+   * Performs a piece made together with a visiting friend (Iteration 4): a
+   * duet (`social.mode` 'jam': the friend's call, then the pet's answer from
+   * `social.split`) or a co-drawn picture ('codraw': `social.owners` says
+   * who draws each stroke). The pet performs its part at its station; the
+   * finished piece is saved to the Gallery as "Made Together", tagged
+   * "Duet with <Visitor>" or "Co-Drawn with <Visitor>".
+   */
+  performSocial({ kind, data, title = null, social, seed = null, style = null, generator = null, model = null, message = null } = {}) {
+    if (kind !== 'music' && kind !== 'drawing') return { ok: false, reason: 'bad-kind', message: 'Unknown piece.' };
+    const tag = sanitizeSocialTag(social);
+    if (!tag || (tag.mode === 'jam') !== (kind === 'music')) return { ok: false, reason: 'bad-social', message: 'That joint piece could not be started.' };
+    const clean = this._sanitize(kind, data);
+    if (this._isEmpty(kind, clean)) return { ok: false, reason: 'empty', message: 'There is nothing to perform yet.' };
+    return this._start({
+      ref: this._ref('s'), kind, mode: 'social', origin: 'social', title: title ?? socialLabel(tag),
+      lessonId: null, parentId: null, itemId: null,
+      seed: Number.isInteger(seed) ? seed >>> 0 : this._seed(), style: style ? sanitizeStyle(style) : null,
+      tags: [], saveOnComplete: true, generator, model, data: clean, social: tag,
+    }, { sourceTitle: socialLabel(tag) }, message);
   }
 
   dismiss() {
@@ -428,6 +455,7 @@ export class CreationFlow {
       petName: this.pet.name,
       generator: s.generator ?? null,
       learned: s.generator === 'neural-v1',
+      social: s.social ? { ...s.social, label: socialLabel(s.social) } : null,
     };
   }
 }

@@ -36,8 +36,20 @@ export const LEARNED_VS_AUTHORED = Object.freeze([
   ['Stroke detail, pressure, width, colour, steadiness', 'StrokePolicyNet: float32 weights trained by gradient descent', 'learned'],
   ['Style-conditioned generation', 'Style inputs of both networks, trained on style copies weighted by your nudges', 'learned'],
   ['How much the networks steer (α)', 'A schedule over training steps and lesson practice', 'authored'],
+  ['Visiting friends: walking, jamming, co-drawing', 'Authored choreography (social-studio.js); a visitor plays and draws from its own snapshot', 'authored'],
+  ['Learning from a visitor', 'Its demonstration joins teaching memory at half weight (0.5×); Sleep Practice trains on it like a lesson', 'memory'],
 ]);
 const TAG = { authored: 'Authored', memory: 'Memory', shared: 'Shared fixed', learned: 'Learned' };
+/** Greek letters keep their case inside upper-cased headers ("α", not "Α", which reads as "A"). */
+const sym = (s) => `<span class="in-sym">${s}</span>`;
+/**
+ * Responsive tables: on narrow screens every row becomes a stacked card (see
+ * styles.css, .in-stack). Explicit ARIA roles keep the table semantics that
+ * browsers drop once rows and cells are no longer laid out as a table, and
+ * each cell carries its column name (data-label) for the card layout.
+ */
+const cell = (cls, label, html, extra = '') => `<td role="cell" class="${cls}"${label ? ` data-label="${esc(label)}"` : ''}${extra}>${html}</td>`;
+const head = (cols) => `<thead role="rowgroup"><tr role="row">${cols.map((c) => `<th role="columnheader" scope="col">${c}</th>`).join('')}</tr></thead>`;
 
 export class LearningInspector {
   constructor({ dialog, app }) {
@@ -70,10 +82,10 @@ export class LearningInspector {
       <div class="in-body">
         <p class="in-msg" data-in-msg role="status" aria-live="polite"></p>
         <section class="in-sec" aria-labelledby="in-arch"><h3 id="in-arch">Networks and parameters</h3><div class="in-nets" data-in-nets></div><p class="in-total" data-in-total></p></section>
-        <section class="in-sec" aria-labelledby="in-data"><h3 id="in-data">Replay buffer and signals</h3><div class="in-table-wrap"><table class="in-table" data-in-data></table></div></section>
+        <section class="in-sec" aria-labelledby="in-data"><h3 id="in-data">Replay buffer and signals</h3><div class="in-table-wrap"><table role="table" aria-labelledby="in-data" class="in-table in-stack in-data" data-in-data></table></div></section>
         <section class="in-sec" aria-labelledby="in-ckpt">
           <h3 id="in-ckpt">Checkpoints</h3>
-          <div class="in-table-wrap"><table class="in-table in-ckpts" data-in-ckpts></table></div>
+          <div class="in-table-wrap"><table role="table" aria-labelledby="in-ckpt" class="in-table in-stack in-ckpts" data-in-ckpts></table></div>
           <div class="in-actions">
             <button type="button" class="btn primary" data-in="run">${useIcon('i-play')}<span>Run 10 Training Steps</span></button>
             <button type="button" class="btn" data-in="save">${useIcon('i-check')}<span>Save Checkpoint</span></button>
@@ -84,12 +96,12 @@ export class LearningInspector {
         <section class="in-sec" aria-labelledby="in-evidence">
           <h3 id="in-evidence">Evidence: closeness to your lessons</h3>
           <p class="in-hint">Same four seeds for every column. "Untrained at the same α" uses the baseline weights with today's blend weight, separating what training learned from the blend schedule. Descriptive, not a score.</p>
-          <div class="in-table-wrap"><table class="in-table" data-in-evidence></table></div>
+          <div class="in-table-wrap"><table role="table" aria-labelledby="in-evidence" class="in-table in-stack in-evidence" data-in-evidence></table></div>
           <button type="button" class="btn" data-in="measure">${useIcon('i-compare')}<span>Measure now</span></button>
         </section>
-        <section class="in-sec" aria-labelledby="in-split"><h3 id="in-split">What is learned and what is authored</h3><div class="in-table-wrap"><table class="in-table in-truth">
-          <thead><tr><th scope="col">Part</th><th scope="col">How it works</th><th scope="col">Kind</th></tr></thead>
-          <tbody>${LEARNED_VS_AUTHORED.map(([part, how, kind]) => `<tr><td>${esc(part)}</td><td>${esc(how)}</td><td><span class="in-kind" data-kind="${kind}">${TAG[kind]}</span></td></tr>`).join('')}</tbody>
+        <section class="in-sec" aria-labelledby="in-split"><h3 id="in-split">What is learned and what is authored</h3><div class="in-table-wrap"><table role="table" aria-labelledby="in-split" class="in-table in-stack in-truth">
+          ${head(['Part', 'How it works', 'Kind'])}
+          <tbody role="rowgroup">${LEARNED_VS_AUTHORED.map(([part, how, kind]) => `<tr role="row">${cell('tr-part', '', esc(part).replace(/α/g, sym('α')))}${cell('tr-how', '', esc(how))}${cell('tr-kind', '', `<span class="in-kind" data-kind="${kind}">${TAG[kind]}</span>`)}</tr>`).join('')}</tbody>
         </table></div></section>
         <section class="in-sec" aria-labelledby="in-settings">
           <h3 id="in-settings">Training settings</h3>
@@ -233,7 +245,7 @@ export class LearningInspector {
       const alpha = app.creative.alphaFor(l.kind, l.id);
       const avg = (fn) => seeds.reduce((a, s) => a + lessonCloseness(l.kind, l.demo, fn(s)), 0) / seeds.length;
       return {
-        id: l.id, kind: l.kind, title: l.title, alpha,
+        id: l.id, kind: l.kind, title: l.title, alpha, social: l.source === 'social',
         authored: avg((s) => app.creative.compose(l.kind, l.demo, { ...opts(s), alpha: 0 })),
         learned: avg((s) => app.creative.compose(l.kind, l.demo, opts(s))),
         control: alpha > 0 ? avg((s) => control.compose(l.kind, l.demo, { ...opts(s), alpha })) : null,
@@ -273,30 +285,33 @@ export class LearningInspector {
     const signals = app.memory.signals;
     const loves = signals.filter((s) => s.kind === 'love').length;
     const nudges = Object.fromEntries(NUDGE_IDS.map((id) => [id, app.memory.nudgeCounts[id] ?? 0]));
-    const row = (label, music, drawing) => `<tr><th scope="row">${label}</th><td>${music}</td><td>${drawing}</td></tr>`;
+    const row = (label, music, drawing) => `<tr role="row"><th role="rowheader" scope="row">${label}</th>${cell('d-music', 'Music', music)}${cell('d-drawing', 'Drawing', drawing)}</tr>`;
+    const wide = (label, value) => `<tr role="row"><th role="rowheader" scope="row">${label}</th>${cell('d-both', '', value, ' colspan="2"')}</tr>`;
     const ex = (kind) => data[kind].counts;
+    const social = app.memory.lessons.filter((l) => l.source === 'social');
     this.el.data.innerHTML = `
-      <thead><tr><th scope="col"></th><th scope="col">Music</th><th scope="col">Drawing</th></tr></thead>
-      <tbody>
+      ${head(['<span class="sr-only">Signal</span>', 'Music', 'Drawing'])}
+      <tbody role="rowgroup">
         ${row('Lessons (demonstrations)', data.music.lessons.length, data.drawing.lessons.length)}
         ${row('Training examples', `${data.music.train.length}`, `${data.drawing.train.length}`)}
         ${row('Held-out examples', data.music.val.length, data.drawing.val.length)}
         ${row('From demonstrations · style copies · preferences', `${ex('music').demo} · ${ex('music').style} · ${ex('music').pref}`, `${ex('drawing').demo} · ${ex('drawing').style} · ${ex('drawing').pref}`)}
-        <tr><th scope="row">Love signals (preference, reward +1)</th><td colspan="2">${loves}</td></tr>
-        <tr><th scope="row">Direction signals (nudges)</th><td colspan="2">${NUDGE_IDS.map((id) => `${NUDGES[id].label} ${nudges[id]}`).join(' · ')}</td></tr>
-        <tr><th scope="row">Style guidance (network style input)</th><td colspan="2">energy ${fmt(app.memory.prefs.energy, 2)} · order ${fmt(app.memory.prefs.order, 2)}</td></tr>
-        <tr><th scope="row">Replay mix per batch</th><td colspan="2">newest ${Math.round(e.settings.replayRecent * 100)}% · older ${Math.round(e.settings.replayOlder * 100)}% · preference and style ${Math.round(e.settings.replayExtra * 100)}% · held out 1 in ${e.settings.holdout}</td></tr>
+        ${wide('Social inspiration (visitor lessons, half weight)', social.length ? social.map((l) => `${esc(l.title ?? 'Visitor idea')} (${l.kind}, ×${fmt(l.weight, 1)})`).join(' · ') : 'none yet: learn from a visiting friend')}
+        ${wide('Love signals (preference, reward +1)', loves)}
+        ${wide('Direction signals (nudges)', NUDGE_IDS.map((id) => `${NUDGES[id].label} ${nudges[id]}`).join(' · '))}
+        ${wide('Style guidance (network style input)', `energy ${fmt(app.memory.prefs.energy, 2)} · order ${fmt(app.memory.prefs.order, 2)}`)}
+        ${wide('Replay mix per batch', `newest ${Math.round(e.settings.replayRecent * 100)}% · older ${Math.round(e.settings.replayOlder * 100)}% · preference and style ${Math.round(e.settings.replayExtra * 100)}% · held out 1 in ${e.settings.holdout}`)}
       </tbody>`;
     const busy = this._busy();
     this.el.ckpts.innerHTML = `
-      <thead><tr><th scope="col">Checkpoint</th><th scope="col">Steps</th><th scope="col">Saved</th><th scope="col">Val. loss</th><th scope="col"><span class="sr-only">Action</span></th></tr></thead>
-      <tbody>${e.listCheckpoints().map((c) => `
-        <tr data-ckpt="${c.id}">
-          <td><strong>${esc(c.name)}</strong> <span class="in-ck" data-kind="${c.kind}">${c.kind}</span></td>
-          <td>${int(c.steps.music)} / ${int(c.steps.drawing)}</td>
-          <td>${c.kind === 'untrained' ? 'built in' : when(c.createdAt)}</td>
-          <td>${fmt(c.valLoss)}</td>
-          <td><button type="button" class="btn in-mini" data-in="rollback" data-id="${c.id}" ${busy ? 'disabled' : ''} aria-label="Rollback to ${esc(c.name)}">${useIcon('i-undo')}<span>Rollback</span></button></td>
+      ${head(['Checkpoint', 'Steps', 'Saved', 'Val. loss', '<span class="sr-only">Action</span>'])}
+      <tbody role="rowgroup">${e.listCheckpoints().map((c) => `
+        <tr role="row" data-ckpt="${c.id}">
+          ${cell('ck-name', '', `<strong>${esc(c.name)}</strong> <span class="in-ck" data-kind="${c.kind}">${c.kind}</span>`)}
+          ${cell('ck-steps', 'Steps', `${int(c.steps.music)} / ${int(c.steps.drawing)}`)}
+          ${cell('ck-saved', 'Saved', c.kind === 'untrained' ? 'built in' : when(c.createdAt))}
+          ${cell('ck-val', 'Val. loss', fmt(c.valLoss))}
+          ${cell('ck-act', '', `<button type="button" class="btn in-mini" data-in="rollback" data-id="${c.id}" ${busy ? 'disabled' : ''} aria-label="Rollback to ${esc(c.name)}">${useIcon('i-undo')}<span>Rollback</span></button>`)}
         </tr>`).join('')}</tbody>`;
     this.el.reset.querySelector('[data-label]').textContent = performance.now() < this.confirmReset ? 'Tap again to reset' : 'Reset Model to Untrained';
     this.el.reset.classList.toggle('confirm', performance.now() < this.confirmReset);
@@ -304,10 +319,11 @@ export class LearningInspector {
     this.el.run.disabled = busy;
     renderLossChart(this.el.chart, e.history.slice(-160));
     const ev = this.evidence;
+    const A = sym('α');
     this.el.evidence.innerHTML = ev && ev.rows.length
-      ? `<thead><tr><th scope="col">Lesson</th><th scope="col">Authored (α 0)</th><th scope="col">Untrained at same α</th><th scope="col">Learned now</th></tr></thead>
-        <tbody>${ev.rows.map((r) => `<tr><td>${esc(r.title ?? (r.kind === 'music' ? 'Your tune' : 'Your drawing'))} <small>(${r.kind}, α ${Math.round(r.alpha * 100)}%)</small></td><td>${Math.round(r.authored * 100)}%</td><td>${r.control == null ? '–' : `${Math.round(r.control * 100)}%`}</td><td><strong>${Math.round(r.learned * 100)}%</strong></td></tr>`).join('')}</tbody>`
-      : `<tbody><tr><td>${app.memory.lessons.length ? 'Press Measure now to compare.' : 'Teach a lesson first.'}</td></tr></tbody>`;
+      ? `${head(['Lesson', `Authored (${A} 0)`, `Untrained at same ${A}`, 'Learned now'])}
+        <tbody role="rowgroup">${ev.rows.map((r) => `<tr role="row">${cell('ev-lesson', '', `${esc(r.title ?? (r.kind === 'music' ? 'Your tune' : 'Your drawing'))} <small>(${r.kind}${r.social ? ', from a visit' : ''}, ${A} ${Math.round(r.alpha * 100)}%)</small>`)}${cell('ev-num ev-authored', 'Authored (α 0)', `${Math.round(r.authored * 100)}%`)}${cell('ev-num ev-control', 'Untrained at same α', r.control == null ? '–' : `${Math.round(r.control * 100)}%`)}${cell('ev-num ev-learned', 'Learned now', `<strong>${Math.round(r.learned * 100)}%</strong>`)}</tr>`).join('')}</tbody>`
+      : `<tbody role="rowgroup"><tr role="row">${cell('ev-empty', '', app.memory.lessons.length ? 'Press Measure now to compare.' : 'Teach a lesson first.')}</tr></tbody>`;
     const s = e.settings;
     const field = (k, label, attrs) => `<label class="in-field"><span>${label}</span><input type="number" data-setting="${k}" value="${s[k]}" ${attrs}></label>`;
     if (!this.el.settings.childElementCount || this.settingsKey !== JSON.stringify(s)) {

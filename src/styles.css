@@ -917,7 +917,9 @@ dialog.inspector::backdrop { background: rgba(60, 40, 60, 0.22); }
 .in-net dd { margin: 0; font-size: 13.5px; font-weight: 800; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .in-net small { color: var(--ink-soft); font-weight: 700; }
 .in-total { margin: 8px 0 0; font-size: 12.5px; font-weight: 700; color: var(--ink-soft); line-height: 1.45; }
-.in-table-wrap { overflow-x: auto; border-radius: 14px; background: #fff; box-shadow: var(--shadow-sm); }
+/* position: relative keeps visually hidden headers (absolutely positioned) inside the wrap,
+   so they can never extend the dialog's own scroll area and shift the whole sheet. */
+.in-table-wrap { position: relative; overflow-x: auto; border-radius: 14px; background: #fff; box-shadow: var(--shadow-sm); }
 .in-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .in-table th, .in-table td { padding: 8px 10px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: middle; }
 .in-table thead th { font-size: 11px; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase; color: var(--ink-soft); white-space: nowrap; }
@@ -946,6 +948,139 @@ dialog.inspector::backdrop { background: rgba(60, 40, 60, 0.22); }
 @media (min-width: 900px) {
   .inspector[open] { inset: 0; margin: auto; width: min(980px, 92vw); height: min(860px, 90vh); border-radius: 24px; }
 }
+/* Greek letters keep their case inside upper-cased headers (an upper-cased "α" reads as "A"). */
+.in-sym { text-transform: none; letter-spacing: 0; }
+
+/* =====================================================================
+   Iteration 4: narrow screens turn every Inspector table row into a
+   stacked card, so no column (Rollback, Learned now, ...) is ever cut off
+   by the sheet edge or hidden behind a sideways scroll.
+   ===================================================================== */
+@media (max-width: 640px) {
+  .in-stack, .in-stack > tbody, .in-stack tr, .in-stack th, .in-stack td { display: block; }
+  .in-stack > thead { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; border: 0; }
+  .in-stack tr { display: grid; gap: 6px 10px; align-items: center; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+  .in-stack > tbody > tr:last-child { border-bottom: 0; }
+  .in-table.in-stack th, .in-table.in-stack td { min-width: 0; padding: 0; border: 0; overflow-wrap: anywhere; }
+  .in-stack td[data-label]::before {
+    content: attr(data-label); display: block; margin-bottom: 1px;
+    font-size: 11px; font-weight: 800; line-height: 1.25; color: var(--ink-soft);
+  }
+  /* Checkpoints: name and Rollback on top; steps, saved and loss below. */
+  .in-ckpts tr { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; grid-template-areas: "name name act" "steps saved val"; }
+  .in-ckpts .ck-name { grid-area: name; }
+  .in-ckpts .ck-act { grid-area: act; justify-self: end; }
+  .in-ckpts .ck-steps { grid-area: steps; }
+  .in-ckpts .ck-saved { grid-area: saved; }
+  .in-ckpts .ck-val { grid-area: val; }
+  /* Evidence: the lesson on top, its three closeness numbers side by side below. */
+  .in-evidence tr { grid-template-columns: repeat(3, minmax(0, 1fr)); grid-template-areas: "lesson lesson lesson" "authored control learned"; }
+  .in-evidence .ev-lesson { grid-area: lesson; }
+  .in-evidence .ev-authored { grid-area: authored; }
+  .in-evidence .ev-control { grid-area: control; }
+  .in-evidence .ev-learned { grid-area: learned; }
+  .in-evidence .ev-num { align-self: end; font-size: 15px; font-weight: 800; font-variant-numeric: tabular-nums; }
+  .in-evidence .ev-empty { grid-column: 1 / -1; }
+  /* Replay buffer: the row's name on top, music and drawing below. */
+  .in-data tr { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .in-data th, .in-data .d-both { grid-column: 1 / -1; }
+  /* Learned vs authored: part and kind chip, then how it works. */
+  .in-truth tr { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "part kind" "how how"; }
+  .in-truth .tr-part { grid-area: part; font-weight: 800; }
+  .in-truth .tr-kind { grid-area: kind; }
+  .in-truth .tr-how { grid-area: how; font-size: 12.5px; color: var(--ink-soft); }
+}
+
+/* =====================================================================
+   Iteration 4: Visit / Jam sheet, "made together" chips, Learn From
+   ===================================================================== */
+.act[data-feature="visit"] { --c: #e0820f; }
+dialog.visit { z-index: 15; }
+.visit[open] {
+  position: fixed; inset: auto 0 0 0; width: 100%; height: 58vh; height: 58dvh; max-height: 620px;
+  border-radius: 24px 24px 0 0; display: flex; flex-direction: column; animation: sheet-up 0.32s cubic-bezier(0.2, 0.9, 0.3, 1);
+}
+.vs-head { display: flex; align-items: center; gap: 10px; padding: 12px 14px 10px; border-bottom: 1px solid var(--line); }
+.vs-badge { flex: none; display: grid; place-items: center; width: 40px; height: 40px; border-radius: 14px; color: #fff; background: linear-gradient(135deg, #ff9f5a, #ffc46b); box-shadow: var(--shadow-sm); }
+.vs-titles { flex: 1; min-width: 0; }
+.vs-titles h2 { margin: 0; font-size: 19px; font-weight: 800; }
+.vs-titles h2:focus { outline: none; }
+.vs-status { margin: 2px 0 0; font-size: 12.5px; font-weight: 700; line-height: 1.35; color: var(--ink-soft); }
+.vs-head .icon-btn { flex: none; background: rgba(255, 255, 255, 0.8); box-shadow: var(--shadow-sm); }
+.vs-body {
+  flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain;
+  padding: 12px 14px 18px; display: flex; flex-direction: column; gap: 12px;
+}
+.vs-msg { margin: 0; padding: 9px 12px; border-radius: 12px; font-size: 13px; font-weight: 800; line-height: 1.4; background: #e6f6ee; color: #2d7553; }
+.vs-msg[data-tone="warn"] { background: #fff1e6; color: #a1460f; }
+.vs-visitor { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 12px; align-items: center; padding: 12px; border-radius: 18px; background: linear-gradient(135deg, #fff4e6, #fdf0ff); box-shadow: var(--shadow-sm); }
+.vs-portrait { display: block; width: 48px; height: 48px; border-radius: 50%; }
+.vs-portrait-lg { width: 64px; height: 64px; }
+.vs-vinfo { min-width: 0; }
+.vs-kicker { margin: 0; font-size: 10.5px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; color: #b85a06; }
+.vs-vinfo h3 { margin: 2px 0; font-size: 17px; font-weight: 800; overflow-wrap: anywhere; }
+.vs-traits, .vs-prov { margin: 0; font-size: 12.5px; font-weight: 700; line-height: 1.4; color: var(--ink-soft); }
+.vs-prov { margin-top: 3px; font-size: 12px; font-weight: 600; }
+.vs-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.vs-actions .btn { min-width: 0; padding: 0 10px; font-size: 13.5px; }
+.vs-actions .btn.primary.vs-draw { background: linear-gradient(180deg, #ffb27a, #ec7b30); box-shadow: inset 0 -3px 0 rgba(0, 0, 0, 0.12), 0 6px 16px rgba(236, 123, 48, 0.3); }
+.vs-ellip { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vs-sec h3 { margin: 0 0 8px; font-size: 11.5px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-soft); }
+.vs-list { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
+.vs-friend { display: grid; grid-template-columns: 48px minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 10px; border-radius: 16px; background: #fff; box-shadow: var(--shadow-sm); }
+.vs-friend.here { box-shadow: 0 0 0 3px #ffb46b, var(--shadow-sm); }
+.vs-friend.new { box-shadow: 0 0 0 3px var(--lav), var(--shadow-sm); }
+.vs-finfo { min-width: 0; }
+.vs-finfo h4 { margin: 0; font-size: 15px; font-weight: 800; overflow-wrap: anywhere; }
+.vs-ftraits { margin: 1px 0 0; font-size: 12px; font-weight: 800; color: #b85a06; }
+.vs-fblurb { margin: 2px 0 0; font-size: 12px; line-height: 1.35; color: var(--ink-soft); }
+.vs-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.vs-tag { padding: 1px 7px; border-radius: 99px; font-size: 10.5px; font-weight: 800; white-space: nowrap; background: #ece6dc; color: #685538; }
+.vs-tag[data-tag="import"] { background: #dbf0fb; color: #1d6b95; }
+.vs-tag[data-tag="learned"] { background: linear-gradient(90deg, #efe9ff, #ffe6f1); color: #5a3fb8; }
+.vs-tag[data-tag="copy"] { background: #fff1cc; color: #7a5a00; }
+.vs-tag[data-tag="new"] { background: var(--lav); color: #fff; }
+.vs-fact { display: flex; flex-direction: column; align-items: stretch; gap: 6px; }
+.vs-invite { min-height: 40px; padding: 0 12px; font-size: 13px; white-space: nowrap; }
+.vs-remove { width: 40px; height: 40px; align-self: flex-end; background: #fff; box-shadow: var(--shadow-sm); color: var(--ink-soft); }
+.vs-note { margin: 0 0 8px; font-size: 12px; line-height: 1.45; color: var(--ink-soft); }
+.vs-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-bottom: 8px; }
+.vs-row .btn { min-width: 0; padding: 0 10px; font-size: 13.5px; white-space: nowrap; }
+.vs-paste { display: flex; flex-direction: column; gap: 6px; }
+.vs-paste-label { font-size: 12px; font-weight: 800; color: var(--ink-soft); }
+.vs-paste textarea {
+  width: 100%; min-height: 72px; padding: 8px 10px; border: 2px solid var(--line); border-radius: 12px; background: #fff;
+  font: 12px/1.4 ui-monospace, Menlo, Consolas, monospace; color: var(--ink); resize: vertical; user-select: text; -webkit-user-select: text;
+}
+.vs-paste textarea:focus { outline: none; border-color: var(--lav); }
+.vs-honest { margin: 0; font-size: 11.5px; line-height: 1.45; color: var(--ink-soft); }
+@media (min-width: 600px) and (max-width: 899px) {
+  .vs-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (min-width: 900px) {
+  .visit[open] {
+    inset: calc(var(--st) + 12px) calc(var(--sr) + 12px) calc(var(--sb) + 12px) auto;
+    width: 420px; height: auto; max-height: none; border-radius: 24px; animation-name: sheet-in;
+  }
+}
+@media (max-width: 599px) {
+  body.visit-open .meters { display: none; }
+  .vs-head { padding: 10px 12px 8px; }
+  .vs-body { padding: 10px 12px 14px; gap: 10px; }
+  .vs-actions .btn, .vs-row .btn { padding: 0 8px; font-size: 13px; }
+}
+
+/* Made together with a visiting friend: a "Duet with Mochi" chip; Learn From replaces the retry controls. */
+.cb-social, .gl-social {
+  flex: none; padding: 2px 7px; border-radius: 999px; font-size: 10.5px; font-weight: 800; white-space: nowrap;
+  background: #ffe9d2; color: #a1460f; box-shadow: inset 0 0 0 1px rgba(224, 130, 15, 0.3);
+}
+.creation-bar.social .cb-origin, .creation-bar.social .cb-variation, .creation-bar.social .cb-nudges { display: none; }
+.cb-learn { min-width: 0; }
+.cb-learn .ico { color: #e0820f; }
+.cb-learn[aria-pressed="true"] { background: #fff1e6; color: #a1460f; }
+.cb-learn:disabled[aria-pressed="true"] { opacity: 1; }
+.cb-learn-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 
 /* ---------- reduced motion ---------- */
 @media (prefers-reduced-motion: reduce) {

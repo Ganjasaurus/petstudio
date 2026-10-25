@@ -67,6 +67,37 @@ export function sanitizeModelTag(m) {
   return { steps: Math.min(m.steps, 1e7), alpha: Number.isFinite(m.alpha) ? Math.round(clamp(m.alpha, 0, 1) * 1000) / 1000 : 0 };
 }
 
+export const SOCIAL_MODES = Object.freeze(['jam', 'codraw']);
+const SOCIAL_ID_RE = /^[a-z0-9:_-]{3,64}$/i;
+
+/**
+ * Made together with a visiting friend (Iteration 4): `jam` duets keep the beat
+ * where the host's answer starts (`split`; the visitor's call comes first),
+ * `codraw` pictures keep who drew each stroke (`owners`: 'v' visitor, 'h' host).
+ */
+export function sanitizeSocialTag(s) {
+  if (!s || typeof s !== 'object' || !SOCIAL_MODES.includes(s.mode)) return null;
+  const visitor = typeof s.visitor === 'string'
+    ? Array.from(s.visitor.replace(/[\u0000-\u001f\u007f<>]/g, '').replace(/\s+/g, ' ').trim()).slice(0, 16).join('').trim()
+    : '';
+  if (!visitor) return null;
+  const out = {
+    mode: s.mode,
+    visitor,
+    visitorId: typeof s.visitorId === 'string' && SOCIAL_ID_RE.test(s.visitorId) ? s.visitorId : null,
+    snapshotId: typeof s.snapshotId === 'string' && SOCIAL_ID_RE.test(s.snapshotId) ? s.snapshotId : null,
+  };
+  if (s.mode === 'jam') out.split = Number.isFinite(s.split) ? clamp(Math.round(s.split * 2) / 2, 0.5, 15.5) : 8;
+  else out.owners = typeof s.owners === 'string' && /^[vh]{1,60}$/.test(s.owners) ? s.owners : '';
+  return out;
+}
+
+/** "Duet with Mochi" / "Co-Drawn with Mochi" (the gallery and feedback-bar tag). */
+export function socialLabel(tag) {
+  if (!tag?.visitor) return '';
+  return tag.mode === 'jam' ? `Duet with ${tag.visitor}` : `Co-Drawn with ${tag.visitor}`;
+}
+
 /** Direction tags for a style, e.g. ['calmer', 'neater']. */
 export function styleTags(style, threshold = 0.15) {
   const s = sanitizeStyle(style);

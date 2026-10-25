@@ -157,10 +157,11 @@ export const EXPRESSIONS = Object.freeze(['neutral', 'happy', 'curious', 'sleepy
  * A creation plan attached to an activity: which piece to perform (`ref`, an
  * opaque id owned by the creation flow), its kind, a fixed duration and why
  * (`attempt` = its take on a lesson, `variation` = a retry, `replay` = from
- * the gallery). The simulation only schedules it; it never invents content.
+ * the gallery, `social` = made together with a visiting friend). The
+ * simulation only schedules it; it never invents content.
  */
 export const PLAN_KINDS = Object.freeze(['music', 'drawing']);
-export const PLAN_MODES = Object.freeze(['attempt', 'variation', 'replay']);
+export const PLAN_MODES = Object.freeze(['attempt', 'variation', 'replay', 'social']);
 const PLAN_STATION = Object.freeze({ music: 'music', drawing: 'easel' });
 const REF_RE = /^[a-z0-9:_-]{1,64}$/i;
 /** Per-second gains while the pet attends a lesson (time spent teaching it). */
@@ -287,10 +288,12 @@ export function describeActivity(activity) {
     case 'bathing': return { text: 'Splashing in the bath', short: 'Bath time', icon: 'bath' };
     case 'sleeping': return { text: 'Napping in its nook', short: 'Napping', icon: 'sleep' };
     case 'playing_music':
+      if (mode === 'social') return { text: 'Jamming with a friend', short: 'Jamming', icon: 'music' };
       if (mode === 'replay') return { text: 'Performing a saved song', short: 'Performing', icon: 'music' };
       if (mode) return { text: 'Playing its own take on your tune', short: 'Playing its take', icon: 'music' };
       return { text: 'Playing music', short: 'Playing music', icon: 'music' };
     case 'drawing':
+      if (mode === 'social') return { text: 'Drawing together with a friend', short: 'Co-drawing', icon: 'draw' };
       if (mode === 'replay') return { text: 'Redrawing a saved picture', short: 'Redrawing', icon: 'draw' };
       if (mode) return { text: 'Drawing its own take on your drawing', short: 'Drawing its take', icon: 'draw' };
       return { text: 'Drawing at the easel', short: 'Drawing', icon: 'draw' };
@@ -964,10 +967,10 @@ export class PetState {
       const n = this.appearance.name;
       const mode = a.plan?.mode;
       if (a.type === 'drawing') {
-        const message = mode === 'replay' ? `${n} redrew it from the gallery!` : mode ? `${n} finished its own take!` : `${n} finished a drawing!`;
+        const message = mode === 'social' ? `${n} finished drawing together!` : mode === 'replay' ? `${n} redrew it from the gallery!` : mode ? `${n} finished its own take!` : `${n} finished a drawing!`;
         this._react('complete', { expression: 'proud', emote: 'jump', bubble: 'star', message });
       } else if (a.type === 'playing_music') {
-        const message = mode === 'replay' ? `${n} performed it from the gallery!` : mode ? `${n} played its own take!` : `${n} played a little tune!`;
+        const message = mode === 'social' ? `${n} finished the duet!` : mode === 'replay' ? `${n} performed it from the gallery!` : mode ? `${n} played its own take!` : `${n} played a little tune!`;
         this._react('complete', { expression: 'proud', emote: 'jump', bubble: 'note', message });
       } else if (a.type === 'sleeping') {
         this._react('complete', { expression: 'happy', emote: 'stretch', message: `${n} woke up refreshed.` });
@@ -1307,6 +1310,31 @@ export class PetState {
     if (a.type !== 'idle' || !(seconds > 0)) return false;
     a.duration = Math.max(a.duration, a.elapsed + Math.min(seconds, 60));
     return true;
+  }
+
+  /**
+   * Social visits (Iteration 4): walks to a station's approach point and waits
+   * there without starting its activity, so a jam or co-draw can begin once
+   * the visiting friend has arrived too. Never refused, but a napping or
+   * exhausted pet cannot join in. The caller pauses autonomy meanwhile.
+   */
+  gatherAt(stationId, { message = null } = {}) {
+    const st = STATIONS[stationId];
+    if (!st) return { type: 'reaction', kind: 'social', ok: false, reason: 'unknown-station', message: 'Unknown station.' };
+    const n = this.appearance.name;
+    if (this.isAsleep) return this._decline('social', 'asleep', `Shh… ${n} is napping. Wake it first.`, 'asleep', null);
+    if (this.needs.energy < 12) return this._decline('social', 'too-tired', `${n} is too sleepy to play right now. Try Rest.`, 'sleepy');
+    this._leaveCurrent();
+    if (distance(this.position, st.approach) < 0.12) this._setIdle();
+    else this._setActivity({ type: 'walking', station: null, pending: 'idle', source: 'player' }, planPath(this.position, st.approach, st.entry ?? []));
+    this._bump('mood', 2);
+    return this._react('social', { expression: 'excited', emote: 'hop', bubble: st.icon, message: typeof message === 'string' ? message.slice(0, 140) : null });
+  }
+
+  /** True when the pet stands (idle) at a station's approach point. */
+  isAt(stationId, tolerance = 0.15) {
+    const st = STATIONS[stationId];
+    return !!st && this.activity.type === 'idle' && distance(this.position, st.approach) <= tolerance;
   }
 
   /** Walks to the Music Corner or Easel to perform a planned piece (gallery replays, retries). */

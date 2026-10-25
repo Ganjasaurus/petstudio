@@ -7,6 +7,8 @@
  * at the same progress always produces the same pixels. Taught strokes carry
  * real pen pressure; the stroke styling is shared with creation-render.js so
  * the easel, the workshop canvas, the gallery and the wall frame match.
+ * `pen.stroke` is the index of the stroke being painted (co-drawn pictures
+ * use it to know whose turn it is).
  */
 import { strokeLength } from './starter-repertoire.js';
 import { pressureWidth } from './creation-render.js';
@@ -95,7 +97,7 @@ export class DrawingSurface {
           ctx.arc(pts[0][0] * S, pts[0][1] * S, (stroke.width * S) / 2, 0, Math.PI * 2);
           ctx.fill();
         }
-        this.pen = { u: pts[0][0], v: pts[0][1], color: stroke.color };
+        this.pen = { u: pts[0][0], v: pts[0][1], color: stroke.color, stroke: i };
         continue;
       }
       const a = Math.max(0, from - s0);
@@ -116,7 +118,7 @@ export class DrawingSurface {
           ctx.moveTo((x0 + (x1 - x0) * t0) * S, (y0 + (y1 - y0) * t0) * S);
           ctx.lineTo((x0 + (x1 - x0) * t1) * S, (y0 + (y1 - y0) * t1) * S);
           ctx.stroke();
-          this.pen = { u: x0 + (x1 - x0) * t1, v: y0 + (y1 - y0) * t1, color: stroke.color };
+          this.pen = { u: x0 + (x1 - x0) * t1, v: y0 + (y1 - y0) * t1, color: stroke.color, stroke: i };
         }
         segStart = segEnd;
       }

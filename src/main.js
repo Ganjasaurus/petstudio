@@ -1,14 +1,15 @@
 /**
- * main.js: composition root for Pet Studio (Iteration 3).
+ * main.js: composition root for Pet Studio (Iteration 4).
  *
  * Wires the deterministic pet simulation (pet-state.js) to the 3D studio
  * (studio-scene.js + pet-model.js), audio (audio.js) and the DOM UI
  * (hud.js, customizer.js, teaching-workshop.js, gallery.js,
- * sleep-practice.js, learning-inspector.js); connects the teaching loop
- * (creation-flow.js) to the teaching memory, the creation gallery and the
- * hybrid creative engine; runs Sleep Practice (practice-runner.js) inside
- * the frame loop; persists everything to localStorage; and exposes
- * window.__PET_STUDIO__ for automated multi-device inspection.
+ * sleep-practice.js, learning-inspector.js, visit-sheet.js); connects the
+ * teaching loop (creation-flow.js) to the teaching memory, the creation
+ * gallery and the hybrid creative engine; runs Sleep Practice
+ * (practice-runner.js) and visiting friends (social-studio.js: a second pet
+ * model, jams and co-drawing) inside the frame loop; persists everything to
+ * localStorage; and exposes window.__PET_STUDIO__ for automated inspection.
  *
  * Learning boundary: the two small networks in neural-engine.js are the
  * only parts that learn (gradient descent during Sleep Practice). Care,
@@ -38,6 +39,10 @@ import { HybridCreativeEngine } from './hybrid-engine.js';
 import { PracticeRunner } from './practice-runner.js';
 import { installSleepPractice } from './sleep-practice.js';
 import { installLearningInspector } from './learning-inspector.js';
+import { SocialStudio, loadFriends, saveFriends, clearFriends, FRIENDS_VERSION, SOCIAL, XYLOPHONE } from './social-studio.js';
+import { createSnapshot, parseSnapshot, serializeSnapshot, snapshotFileName, snapshotSummary, BUILTIN_IDS, SNAPSHOT_FORMAT } from './pet-snapshot.js';
+import { installVisitSheet } from './visit-sheet.js';
+import { VISIT_SPOTS } from './studio-layout.js';
 
 /* global __PETSTUDIO_BUILD__ */
 const BUILD = typeof __PETSTUDIO_BUILD__ !== 'undefined' ? __PETSTUDIO_BUILD__ : { version: 'dev', mode: 'unbundled', builtAt: null };
@@ -49,13 +54,16 @@ const WORKSHOP_DRAFT_KEY = 'petstudio.workshop.v1';
 const REACTION_ICON = {
   feed: 'i-feed', wash: 'i-wash', sleep: 'i-rest', wake: 'i-wake', pet: 'i-bond', praise: 'i-praise',
   music: 'i-music', draw: 'i-draw', listen: 'i-listen', complete: 'i-praise', lesson: 'i-teach', love: 'i-bond', practice: 'i-practice',
+  social: 'i-visit',
 };
 const REACTION_SOUND = {
   feed: 'feed', wash: 'wash', sleep: 'sleep', wake: 'wake', pet: 'pet', praise: 'praise',
-  music: 'go', draw: 'go', listen: 'go', complete: 'complete', lesson: 'lesson', love: 'love', practice: 'sleep',
+  music: 'go', draw: 'go', listen: 'go', complete: 'complete', lesson: 'lesson', love: 'love', practice: 'sleep', social: 'go',
 };
 const STATION_VIEW = { music: 'music', drawing: 'easel' };
-const VIEW_STATION = { music: 'music', easel: 'easel' };
+const VIEW_STATION = { music: 'music', easel: 'easel', jam: 'music', codraw: 'easel' };
+/** Camera presets that frame both pets during a jam or a co-draw. */
+const SOCIAL_VIEW = { jam: 'jam', codraw: 'codraw' };
 const LOW_NEED_HINT = {
   hunger: ['looks a little peckish.', 'i-hunger'],
   energy: ['is getting sleepy.', 'i-energy'],
@@ -93,6 +101,10 @@ const FEATURE_PLACEHOLDERS = [
   {
     id: 'inspector', label: 'Learning Inspector', short: 'Inspector', icon: 'inspector', iteration: 3,
     description: 'Developer diagnostics: learned parameters, losses, checkpoints, and which behaviour is authored versus learned.',
+  },
+  {
+    id: 'visit', label: 'Visit / Jam', short: 'Visit', icon: 'visit', iteration: 4,
+    description: 'Invite a friend pet into your studio to jam and draw together, and share your pet as a snapshot.',
   },
 ];
 
@@ -178,7 +190,22 @@ class App {
     this.perf = { acc: 0, frames: 0, fps: 0, dpr: Math.min(window.devicePixelRatio || 1, 2) };
     this.tmp = { head: new THREE.Vector3(), pen: new THREE.Vector3(), focus: new THREE.Vector3() };
     this.vm = { position: null, heading: 0, elevation: 0, activity: 'idle', walkSpeed: 1, expression: 'neutral', bubble: null };
-    this.ctx = { cameraPosition: null, penTarget: null, keyTargets: null, beat: null, listenBeat: null, paintColor: null };
+    this.ctx = { cameraPosition: null, penTarget: null, keyTargets: null, beat: null, listenBeat: null, paintColor: null, lookAt: null };
+    // Visiting friend (Iteration 4): its model's scene context, key targets and pop-in / pop-out.
+    this.vctx = { cameraPosition: null, penTarget: null, keyTargets: null, beat: null, listenBeat: null, paintColor: null, lookAt: null };
+    this.visitorKeys = [null, null];
+    this.visitorFx = null;
+    this.visitorGlance = { timer: 0, atHost: true };
+    this.autonomyHolds = new Set();
+    this.friendsDirty = false;
+    this.tmpV = { head: new THREE.Vector3(), pen: new THREE.Vector3(), focus: new THREE.Vector3(), hostHead: new THREE.Vector3() };
+  }
+
+  /** The host's autonomy pauses while anything holds it (customizer, workshop, a social session). */
+  holdAutonomy(key, held) {
+    if (held) this.autonomyHolds.add(key);
+    else this.autonomyHolds.delete(key);
+    if (this.pet) this.pet.autonomy = this.autonomyHolds.size === 0;
   }
 
   boot() {
@@ -215,6 +242,16 @@ class App {
     this.practice = new PracticeRunner({ engine: this.neural, creative: this.creative, pet: this.pet, memory: this.memory, now: () => performance.now() });
     this.practice.on((e) => this.onPracticeEvent(e));
     this.flow.on((e) => this.onFlowEvent(e));
+    // Visiting friends: built-in and imported snapshots, and the visit state machine.
+    const fr = loadFriends(this.storage);
+    this.friends = fr.friends;
+    this.storeStatus.friends = fr.status;
+    this.friends.onChange(() => this.scheduleFriendsSave());
+    this.social = new SocialStudio({
+      pet: this.pet, flow: this.flow, memory: this.memory, creative: this.creative,
+      now: () => performance.now(), setAutonomy: (on) => this.holdAutonomy('social', !on),
+    });
+    this.social.on((e) => this.onSocialEvent(e));
     this.memory.onChange(() => this.scheduleStoreSave());
     this.gallery.onChange((what) => {
       this.scheduleStoreSave();
@@ -254,9 +291,11 @@ class App {
     this.galleryView = installGallery(this, { reducedMotion });
     this.practiceView = installSleepPractice(this, { reducedMotion });
     this.inspector = installLearningInspector(this);
+    this.visitView = installVisitSheet(this, { reducedMotion });
     this.watchModals();
     this.restoreCreativeState();
     this.refreshWallArt();
+    this.restoreVisit();
 
     this.hud.setMuted(this.audio.muted);
     const view = params.get('view');
@@ -294,6 +333,23 @@ class App {
       this.last = t;
       this.frame(t);
     });
+    this.registerServiceWorker();
+  }
+
+  /**
+   * Installed app (PWA): a network-first service worker (sw.js) caches what
+   * the page loads, so the home-screen app can start offline after one
+   * visit. Production builds on secure origins only; ?nosw=1 skips it.
+   */
+  registerServiceWorker() {
+    this.sw = { supported: 'serviceWorker' in navigator, registered: false, scope: null, error: null };
+    if (!this.sw.supported || BUILD.mode !== 'production' || params.get('nosw') === '1' || !window.isSecureContext) return;
+    navigator.serviceWorker.register('sw.js').then((reg) => {
+      this.sw.registered = true;
+      this.sw.scope = reg.scope;
+    }).catch((err) => {
+      this.sw.error = String(err?.message ?? err); // offline start is a bonus: never an error for the player
+    });
   }
 
   /** Re-shows the saved drawing on the easel and resumes music sessions after a reload. */
@@ -308,15 +364,33 @@ class App {
     if (a.type === 'playing_music' || a.type === 'listening') this.beginSession(a.type, a.seed);
   }
 
+  /**
+   * The social tag of a piece made with a friend who is here doing it right now
+   * (a jam's split or a co-draw's stroke owners), else null: a duet resumed after
+   * a reload, or replayed from the gallery, is performed by the host alone.
+   */
+  liveSocialPiece() {
+    const plan = this.pet.activity.plan;
+    if (plan?.mode !== 'social' || !this.social?.pieceFor(plan.ref) || !this.visitorModel) return null;
+    const subj = this.flow.subject;
+    return subj?.ref === plan.ref ? subj.social : null;
+  }
+
   /** What the studio renders comes from the creation flow: a planned piece or a starter one. */
   beginSession(type, seed) {
     const s = this.session;
     if (type === 'drawing' && this.pet.currentDrawing) {
       const rec = this.pet.currentDrawing;
       s.drawing = this.flow.drawingFor(rec);
+      const social = this.liveSocialPiece();
+      s.drawingOwners = social?.mode === 'codraw' && social.owners ? social.owners : null;
       if (s.drawing) this.studio?.showDrawing(s.drawing, rec.progress);
     } else if (type === 'playing_music') {
-      s.music = { phrase: this.flow.phraseFor(this.pet.activity), cursor: 0, hitCursor: 0, lead: 0.5 };
+      const social = this.liveSocialPiece();
+      const duet = social?.mode === 'jam' ? { split: social.split } : null;
+      // A duet plays once: the visitor's call, then the host's answer.
+      s.music = { phrase: this.flow.phraseFor(this.pet.activity), cursor: 0, hitCursor: 0, lead: 0.5, once: !!duet, duet };
+      this.visitorKeys = [null, null];
       if (this.studio) {
         const m = this.studio.stations.music;
         s.keyTargets = [m.keyWorld(67), m.keyWorld(76)];
@@ -387,8 +461,11 @@ class App {
         this.refreshWallArt();
       }
       this.session.drawing = null;
+      this.session.drawingOwners = null;
+      this.codrawFrame = null;
     } else if (e.activity === 'playing_music') {
       this.session.music = null;
+      this.jamFrame = null;
     } else if (e.activity === 'listening') {
       this.session.listen = null;
     } else if (e.activity === 'lesson') {
@@ -435,6 +512,10 @@ class App {
       this.action('pet');
       return;
     }
+    if (hit.id === 'visitor') {
+      this.greetVisitor();
+      return;
+    }
     if (hit.id === 'frame') {
       this.openFeature('gallery');
       return;
@@ -451,6 +532,7 @@ class App {
     }
     let text;
     if (hit.id === 'pet') text = `${this.pet.name}: tap to pet`;
+    else if (hit.id === 'visitor') text = `${this.social.displayName() || 'Your friend'} is visiting: tap to say hi`;
     else if (hit.id === 'frame') text = this.studio?.wallArt.pinned ? `"${this.studio.wallArt.title}": tap to open the Gallery` : 'Gallery wall: tap to open the Gallery';
     else text = STATION_TIP[hit.id.replace('station:', '')];
     this.hud.showTip(text, at.x, at.y);
@@ -490,8 +572,9 @@ class App {
       this.hud.openNext(id);
       return;
     }
-    // Sleep Practice is a non-modal drawer: another drawer takes its place (practice keeps running).
+    // Sleep Practice and Visit / Jam are non-modal drawers: another drawer takes their place (practice and visits go on).
     if (id !== 'practice' && id !== 'inspector' && this.practiceView?.isOpen) this.practiceView.close('switch');
+    if (id !== 'visit' && id !== 'inspector' && this.visitView?.isOpen) this.visitView.close('switch');
     f.open(this.api);
   }
 
@@ -681,6 +764,11 @@ class App {
   feedback(kind) {
     this.audio.unlock();
     let res;
+    if (kind === 'learn') {
+      res = this.learnFromVisitor();
+      this.hudDirty = true;
+      return res;
+    }
     if (kind === 'love') res = this.flow.love();
     else if (kind === 'variation') res = this.flow.variation();
     else if (NUDGES[kind]) res = this.flow.nudge(kind);
@@ -703,7 +791,7 @@ class App {
     document.body.classList.add(`${name}-open`);
     if (name === 'workshop') {
       this.prevView = this.studio?.view ?? 'overview';
-      this.pet.autonomy = false; // stay put and attentive while being taught
+      this.holdAutonomy('workshop', true); // stay put and attentive while being taught
       this.setView('pet', { auto: true });
     }
     this.hudDirty = true;
@@ -714,8 +802,8 @@ class App {
     this.sheet = null;
     document.body.classList.remove(`${name}-open`);
     if (name === 'workshop') {
-      this.pet.autonomy = true;
-      if (reason !== 'teach') this.setView(this.prevView === 'wall' ? 'overview' : this.prevView);
+      this.holdAutonomy('workshop', false);
+      if (reason !== 'teach') this.setView(['wall', 'jam', 'codraw'].includes(this.prevView) ? 'overview' : this.prevView);
     }
     this.hudDirty = true;
     this.layoutSoon();
@@ -761,6 +849,7 @@ class App {
     clearTeachingMemory(this.storage);
     clearGallery(this.storage);
     clearModel(this.storage);
+    clearFriends(this.storage);
     try {
       this.storage.removeItem(WORKSHOP_DRAFT_KEY);
     } catch {
@@ -768,12 +857,337 @@ class App {
     }
   }
 
+  // ----- visiting friends (Visit / Jam, Iteration 4) ----------------------------------
+  /** After a reload mid-visit the friend is still here, at its hangout spot (sessions do not resume). */
+  restoreVisit() {
+    const v = this.friends.visit;
+    const f = v ? this.friends.get(v.friendId) : null;
+    if (f) this.social.invite(f.snapshot, { friendId: f.id, origin: f.origin, instant: true });
+    else if (v) this.friends.setVisit(null);
+  }
+
+  onVisitOpen() {
+    document.body.classList.add('visit-open');
+    // The room, where friends arrive, stays in view above (or beside) the sheet.
+    if (!['overview', 'jam', 'codraw'].includes(this.studio?.view)) this.setView('overview', { auto: true });
+    this.hudDirty = true;
+    this.layoutSoon();
+  }
+
+  onVisitClose() {
+    document.body.classList.remove('visit-open');
+    this.hudDirty = true;
+    this.layoutSoon();
+  }
+
+  inviteFriend(id) {
+    this.audio.unlock();
+    const f = this.friends.get(id);
+    if (!f) return { ok: false, reason: 'missing', message: 'That friend is no longer here.' };
+    if (this.social.session) return { ok: false, reason: 'busy', message: `Finish the ${this.social.session.mode === 'jam' ? 'jam' : 'drawing'} first.` };
+    const res = this.social.invite(f.snapshot, { friendId: f.id, origin: f.origin });
+    return res.ok ? { ok: true, visitor: res.visitor } : { ok: false, reason: res.reason, message: 'That friend could not visit right now.' };
+  }
+
+  sendVisitorHome() {
+    return this.social.sendHome();
+  }
+
+  /** Jam Together / Co-Draw Together: both pets walk to the station; the sheet steps aside. */
+  startSocial(mode) {
+    this.audio.unlock();
+    const res = mode === 'jam' ? this.social.startJam() : this.social.startCoDraw();
+    if (!res.ok && res.message && !this.visitView?.isOpen) this.hud.toast(res.message, { tone: 'warn', icon: 'i-visit' });
+    this.hudDirty = true;
+    return res;
+  }
+
+  /** "Learn From <Visitor>": the friend's demonstration joins teaching memory at half weight. */
+  learnFromVisitor() {
+    const res = this.social.learn();
+    if (res.ok) {
+      if (!res.existing) this.friends.count('learned');
+      this.saveStores();
+      this.audio.sfx('learn');
+      this.model?.playEmote('nod');
+      if (this.studio && this.model) this.studio.emit('sparkle', this.model.getHeadWorldPosition(this.tmpV.head), { count: 6 });
+      this.hud.toast(res.message, { icon: 'i-teach', duration: 4200 });
+    } else if (res.message && !this.visitView?.isOpen) {
+      this.hud.toast(res.message, { tone: 'warn', icon: 'i-teach' });
+    }
+    this.hudDirty = true;
+    return res;
+  }
+
+  /** Tapping the visitor: it waves back. */
+  greetVisitor() {
+    const v = this.social.visitor;
+    if (!v) return;
+    v.actor.emote(['drawing', 'playing_music'].includes(v.actor.activity) ? 'nod' : 'wiggle');
+    v.actor.say('heart', { seconds: 1.8 });
+    if (this.visitorModel && this.studio) this.studio.emit('heart', this.visitorModel.getHeadWorldPosition(this.tmpV.head), { count: 4 });
+    this.audio.sfx('pet');
+    this.hud.toast(`${this.social.displayName()} waves hello!`, { icon: 'i-visit', duration: 2000 });
+  }
+
+  /** A fresh petstudio.snapshot.v1 of the pet (look, temperament, style, weights, own pieces). */
+  makeSnapshot() {
+    return createSnapshot({ pet: this.pet, gallery: this.gallery, memory: this.memory, neural: this.neural, now: Date.now(), appVersion: BUILD.version });
+  }
+
+  exportSnapshot({ download = true } = {}) {
+    let snap;
+    let json;
+    try {
+      snap = this.makeSnapshot();
+      json = serializeSnapshot(snap);
+    } catch {
+      return { ok: false, reason: 'export-failed', message: 'The snapshot could not be made right now.' };
+    }
+    const fileName = snapshotFileName(snap);
+    if (download) {
+      try {
+        const url = URL.createObjectURL(new Blob([json], { type: 'application/json' }));
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = fileName;
+        a.rel = 'noopener';
+        a.hidden = true;
+        document.body.append(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 4000);
+      } catch {
+        return { ok: false, reason: 'download-failed', message: 'This browser blocked the download. Try Copy instead.' };
+      }
+      this.friends.count('exports');
+    }
+    return { ok: true, fileName, bytes: json.length, snapshot: snap, json };
+  }
+
+  async copySnapshot() {
+    const res = this.exportSnapshot({ download: false });
+    if (!res.ok) return res;
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(res.json);
+        return { ok: true, bytes: res.bytes };
+      }
+    } catch {
+      /* fall back to a hidden textarea */
+    }
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = res.json;
+      ta.setAttribute('readonly', '');
+      ta.style.cssText = 'position:fixed;left:0;top:0;width:1px;height:1px;opacity:0;';
+      document.body.append(ta);
+      ta.select();
+      const ok = document.execCommand('copy');
+      ta.remove();
+      if (ok) return { ok: true, bytes: res.bytes };
+    } catch {
+      /* clipboard unavailable */
+    }
+    return { ok: false, reason: 'clipboard', message: 'This browser blocked the clipboard. Use Download Snapshot instead.' };
+  }
+
+  /** Imports an untrusted snapshot (file text or paste): validated, then kept as a friend with its own local id. */
+  importSnapshot(input) {
+    const parsed = parseSnapshot(input);
+    if (!parsed.ok) return parsed;
+    const added = this.friends.add(parsed.snapshot);
+    if (!added.ok) return { ok: false, reason: added.reason, message: 'That snapshot could not be kept.' };
+    this.saveFriendsNow();
+    const snap = added.friend.snapshot;
+    return {
+      ok: true, friendId: added.friend.localId, name: snap.pet.name, existing: added.existing, warnings: parsed.warnings,
+      copy: !!snap.source?.petId && snap.source.petId === this.pet.id, summary: snapshotSummary(snap),
+    };
+  }
+
+  removeFriend(id) {
+    if (this.social.visitor?.id === id) return false;
+    const ok = this.friends.remove(id);
+    if (ok) this.saveFriendsNow();
+    return ok;
+  }
+
+  scheduleFriendsSave(delay = 300) {
+    this.friendsDirty = true;
+    clearTimeout(this.friendsTimer);
+    this.friendsTimer = setTimeout(() => this.saveFriendsNow(), delay);
+  }
+
+  saveFriendsNow() {
+    clearTimeout(this.friendsTimer);
+    this.friendsDirty = false;
+    return saveFriends(this.friends, this.storage, Date.now());
+  }
+
+  onSocialEvent(e) {
+    switch (e.type) {
+      case 'arrive':
+        this.spawnVisitorModel(e.instant);
+        this.friends.setVisit(this.social.visitor.id);
+        if (!e.instant) {
+          this.audio.sfx('visit');
+          this.hud.toast(`${this.social.displayName()} comes over to visit!`, { icon: 'i-visit', duration: 3200 });
+        }
+        break;
+      case 'arrived':
+        if (this.visitorModel && this.studio) this.studio.emit('heart', this.visitorModel.getHeadWorldPosition(this.tmpV.head), { count: 5 });
+        break;
+      case 'leaving':
+        this.audio.sfx('bye');
+        this.hud.toast(`${e.name} waves goodbye and heads home.`, { icon: 'i-visit', duration: 2800 });
+        break;
+      case 'left':
+        this.despawnVisitorModel(e.instant);
+        this.friends.setVisit(null);
+        break;
+      case 'session':
+        this.onSocialSession(e);
+        break;
+      default:
+        break;
+    }
+    this.hudDirty = true;
+    if (this.visitView?.isOpen) this.visitView.render(true);
+  }
+
+  onSocialSession(e) {
+    const s = e.session;
+    if (e.phase === 'gathering') {
+      // Both pets walk over: the sheet steps aside and the camera frames them together.
+      this.visitView?.close('session');
+      this.flowCam = { ref: null, view: SOCIAL_VIEW[s.mode], social: true };
+      this.setView(SOCIAL_VIEW[s.mode], { auto: true });
+    } else if (e.phase === 'performing') {
+      if (this.flowCam?.social) this.flowCam.ref = s.ref;
+      this.saveStores();
+    } else if (e.phase === 'done') {
+      this.friends.count(s.mode === 'jam' ? 'jams' : 'codraws');
+      if (this.studio && this.model) {
+        this.studio.emit('sparkle', this.model.getHeadWorldPosition(this.tmpV.head), { count: 10 });
+        if (this.visitorModel) this.studio.emit('sparkle', this.visitorModel.getHeadWorldPosition(this.tmpV.head), { count: 10 });
+      }
+    } else if (e.phase === 'cancelled') {
+      if (e.message) this.hud.toast(e.message, { tone: 'warn', icon: 'i-visit' });
+      const fc = this.flowCam;
+      if (fc?.social) {
+        this.flowCam = null;
+        if (this.studio?.view === fc.view) this.setView('overview', { auto: true });
+      }
+    }
+  }
+
+  /** The friend's own PetModel joins the studio (left-handed, so it paints from the other side of the easel). */
+  spawnVisitorModel(instant) {
+    if (!this.studio) return;
+    this.despawnVisitorModel(true);
+    const v = this.social.visitor;
+    const model = new PetModel(v.snapshot.pet, { reducedMotion, brushHand: 'left', pickId: 'visitor' });
+    this.visitorModel = model;
+    this.studio.setVisitor(model);
+    model.root.scale.setScalar(instant ? 1 : 0.001);
+    this.visitorFx = { scale: instant ? 1 : 0 };
+    if (!instant) this.studio.emit('sparkle', new THREE.Vector3(v.actor.position.x, 0.6, v.actor.position.z), { count: 12 });
+  }
+
+  despawnVisitorModel(instant) {
+    const model = this.visitorModel;
+    if (!model) return;
+    this.visitorModel = null;
+    this.visitorFx = null;
+    if (instant || !this.studio) {
+      if (this.studio?.visitor === model) this.studio.setVisitor(null);
+      model.dispose();
+      return;
+    }
+    this.leavingModel = { model, scale: model.root.scale.x }; // pops out over the next frames
+    this.studio.emit('sparkle', model.getHeadWorldPosition(this.tmpV.head), { count: 12 });
+  }
+
+  /**
+   * Per frame: the visiting friend's model. While hanging out it faces you and
+   * mostly watches its host; in a jam it plays its call on the xylophone, then
+   * listens; at the easel its brush follows the pen on its own strokes.
+   */
+  updateVisitorModel(dt) {
+    const lm = this.leavingModel;
+    if (lm) {
+      lm.scale = Math.max(0, lm.scale - dt * 3.4);
+      lm.model.root.scale.setScalar(Math.max(0.001, lm.scale));
+      if (lm.scale <= 0.02) {
+        if (this.studio?.visitor === lm.model) this.studio.setVisitor(null);
+        lm.model.dispose();
+        this.leavingModel = null;
+      }
+    }
+    const v = this.social.visitor;
+    const model = this.visitorModel;
+    if (!v || !model || !this.model) return;
+    const fx = this.visitorFx;
+    if (fx && fx.scale < 1) {
+      fx.scale = Math.min(1, fx.scale + dt * 2.6);
+      const t = fx.scale;
+      const s = reducedMotion ? t : 1 + 2.70158 * (t - 1) ** 3 + 1.70158 * (t - 1) ** 2;
+      model.root.scale.setScalar(Math.max(0.001, s));
+    }
+    const vm = v.actor.view();
+    const c = this.vctx;
+    c.cameraPosition = null;
+    c.penTarget = null;
+    c.keyTargets = null;
+    c.beat = null;
+    c.listenBeat = null;
+    c.paintColor = null;
+    c.lookAt = null;
+    const hostHead = this.model.getHeadWorldPosition(this.tmpV.hostHead);
+    const s = this.social.session;
+    if (s) {
+      if (s.phase === 'performing' && s.mode === 'jam' && this.jamFrame) {
+        if (s.turn === 'visitor') {
+          if (!this.visitorKeys[0]) [this.visitorKeys[0], this.visitorKeys[1]] = this.studio.xylophoneTargets();
+          c.keyTargets = this.visitorKeys;
+          c.beat = this.jamFrame.beat;
+        } else {
+          c.listenBeat = this.jamFrame.beat;
+          c.lookAt = hostHead;
+        }
+      } else if (s.phase === 'performing' && s.mode === 'codraw' && this.codrawFrame) {
+        const cf = this.codrawFrame;
+        if (cf.owner === 'v') {
+          c.penTarget = cf.pen;
+          c.paintColor = cf.color;
+        } else c.lookAt = cf.pen ?? hostHead;
+      } else if (s.phase === 'done') {
+        c.lookAt = hostHead;
+      }
+    } else if (vm.activity !== 'walking') {
+      // Hanging out together: it faces you and mostly watches its friend.
+      c.cameraPosition = this.studio.camera.position;
+      const g = this.visitorGlance;
+      g.timer -= dt;
+      if (g.timer <= 0) {
+        g.timer = 2.2 + Math.random() * 2.8;
+        g.atHost = Math.random() < 0.7;
+      }
+      if (g.atHost) c.lookAt = hostHead;
+      if (vm.activity === 'lesson') c.listenBeat = this.ctx.beat;
+    }
+    for (const name of v.actor.emotes.splice(0)) model.playEmote(name);
+    model.update(dt, vm, c);
+  }
+
   // ----- customizer -----------------------------------------------------------------
   openCustomizer({ firstRun = false } = {}) {
     if (this.customizer.isOpen || this.workshop?.isOpen || this.galleryView?.isOpen || this.inspector?.isOpen) return;
     if (this.practiceView?.isOpen) this.practiceView.close('switch');
+    if (this.visitView?.isOpen) this.visitView.close('switch');
     this.prevView = this.studio?.view ?? 'overview';
-    this.pet.autonomy = false; // hold still (and face you) while being customised
+    this.holdAutonomy('customizer', true); // hold still (and face you) while being customised
     this.customizer.open({ appearance: this.pet.appearance, traits: this.pet.traits, firstRun });
     this.setView('pet');
     this.layoutSoon();
@@ -795,8 +1209,8 @@ class App {
       }
     }
     this.model?.setAppearance(this.pet.appearance);
-    this.pet.autonomy = true;
-    this.setView(firstRun ? 'overview' : this.prevView);
+    this.holdAutonomy('customizer', false);
+    this.setView(firstRun || ['jam', 'codraw'].includes(this.prevView) ? 'overview' : this.prevView);
     this.hud.render(this.pet.snapshot(), true);
     this.layoutSoon();
   }
@@ -835,6 +1249,7 @@ class App {
     if (this.customizer?.isOpen) return this.customizer.panelRect();
     if (this.workshop?.isOpen) return this.workshop.panelRect();
     if (this.practiceView?.isOpen) return this.practiceView.panelRect();
+    if (this.visitView?.isOpen) return this.visitView.panelRect();
     return null;
   }
 
@@ -892,8 +1307,8 @@ class App {
     const bar = document.getElementById('creation-bar');
     root.style.setProperty('--dock-top', `${Math.round(vh - dock.top + 8)}px`);
     let barTop = bar.hidden ? dock.top : Math.min(dock.top, bar.getBoundingClientRect().top);
-    // A non-modal bottom sheet (Sleep Practice on phones and tablets) lifts the toasts above it.
-    const panel = this.practiceView?.isOpen ? this.practiceView.panelRect() : null;
+    // A non-modal bottom sheet (Sleep Practice or Visit / Jam on phones and tablets) lifts the toasts above it.
+    const panel = this.practiceView?.isOpen ? this.practiceView.panelRect() : this.visitView?.isOpen ? this.visitView.panelRect() : null;
     if (panel && panel.width && panel.left <= vw * 0.35) barTop = Math.min(barTop, panel.top);
     root.style.setProperty('--toast-bottom', `${Math.round(vh - barTop + 10)}px`);
     this.safeRect = this.computeSafeRect();
@@ -918,6 +1333,14 @@ class App {
     pet.update(dt * this.timeScale);
     // Sleep Practice trains in wall-clock time, a few steps per frame within a 4 ms budget.
     this.practice.tick(dt);
+    // A visiting friend walks and plays in simulation time, like its host (and keeps out of the shot).
+    if (this.studio) {
+      const cp = this.studio.camera.position;
+      const hint = this.social.viewHint ?? (this.social.viewHint = { x: 0, z: 0 });
+      hint.x = cp.x;
+      hint.z = cp.z;
+    }
+    this.social.update(dt * this.timeScale);
     const a = pet.activity;
     const dreaming = this.practice.running && pet.isAsleep;
 
@@ -929,10 +1352,24 @@ class App {
       ctx.keyTargets = null;
       ctx.beat = null;
       ctx.listenBeat = null;
+      ctx.lookAt = null;
+      const visitorHead = this.visitorModel ? this.visitorModel.getHeadWorldPosition(this.tmpV.head) : null;
       if (a.type === 'drawing' && this.session.drawing) {
         this.studio.setDrawingProgress(a.duration > 0 ? a.elapsed / a.duration : 1);
-        ctx.penTarget = this.studio.penWorld(this.tmp.pen);
-        ctx.paintColor = this.studio.paintColor;
+        const pen = this.studio.penWorld(this.tmp.pen);
+        const owners = this.session.drawingOwners;
+        if (owners) {
+          // Co-drawing: whoever owns the stroke being painted holds the pen; the other watches it.
+          const owner = owners[this.studio.penStroke] ?? 'h';
+          this.codrawFrame = { owner, pen: pen ? this.tmpV.pen.copy(pen) : null, color: this.studio.paintColor };
+          if (owner === 'h') {
+            ctx.penTarget = pen;
+            ctx.paintColor = this.studio.paintColor;
+          } else ctx.lookAt = pen ?? visitorHead;
+        } else {
+          ctx.penTarget = pen;
+          ctx.paintColor = this.studio.paintColor;
+        }
       } else if (a.type === 'playing_music' && this.session.music) {
         this.stepPhrase(this.session.music, a.elapsed, ctx, 'perform');
       } else if (a.type === 'listening' && this.session.listen) {
@@ -950,12 +1387,26 @@ class App {
       const dreamKind = dreaming ? this.practice.focusLesson()?.kind ?? 'music' : null;
       // While it practises, a thought bubble shows what it is dreaming about.
       vm.bubble = dreamKind ? { icon: dreamKind === 'drawing' ? 'draw' : 'note', kind: 'thought', key: `dream:${dreamKind}` } : pet.getBubble();
+      const jam = a.type === 'playing_music' && this.session.music?.duet ? this.jamFrame : null;
+      if (jam && jam.beat < this.session.music.duet.split) {
+        // The visitor's call: the host listens attentively, bobbing along and watching its friend.
+        vm.activity = 'lesson';
+        vm.bubble = { icon: 'listen', kind: 'thought', key: 'jam:listen' };
+        ctx.cameraPosition = null;
+        ctx.listenBeat = jam.beat;
+        ctx.lookAt = visitorHead;
+      } else if (this.social.visitor && this.social.session?.phase === 'done' && visitorHead) {
+        ctx.lookAt = visitorHead; // both enjoy what they made together
+      }
       this.model.update(dt, vm, ctx);
+      this.updateVisitorModel(dt);
       this.studio.update(dt, {
         activity: a.type,
         petHead: this.model.getHeadWorldPosition(this.tmp.head),
         petFocus: this.tmp.focus.copy(this.model.root.position),
         dream: dreamKind,
+        visiting: !!this.social.visitor && !this.social.visitor.leaving,
+        visitorFocus: this.visitorModel ? this.tmpV.focus.copy(this.visitorModel.root.position) : null,
       });
       this.studio.render();
       this.trackPerf(dt);
@@ -964,7 +1415,12 @@ class App {
     if (this.hudDirty || t - this.lastHud > 160) {
       this.hud.render(this.decorateSnapshot(pet.snapshot()));
       // The feedback bar hides while a sheet covers the studio; its appearance reframes the camera.
-      const bar = this.sheet || this.customizer.isOpen || this.practiceView?.isOpen ? { visible: false } : this.flow.barState();
+      const bar = this.sheet || this.customizer.isOpen || this.practiceView?.isOpen || this.visitView?.isOpen ? { visible: false } : this.flow.barState();
+      if (bar.visible && bar.social) {
+        // Made with a friend: whose turn it is, and whether its idea can still be kept.
+        bar.learn = this.social.canLearn(bar.ref);
+        bar.turn = this.social.session?.ref === bar.ref ? this.social.session.turn : null;
+      }
       if (this.hud.renderCreationBar(bar)) this.layoutSoon();
       this.lastHud = t;
       this.hudDirty = false;
@@ -990,6 +1446,9 @@ class App {
     const beat = elapsed / spb - (s.lead ?? 0);
     const loopBeats = ph.beats + 1;
     const speaker = mode !== 'perform';
+    // A duet: notes before the split are the visiting friend's call, played on its xylophone.
+    const duet = mode === 'perform' && s.duet && this.visitorModel ? s.duet : null;
+    if (duet) this.jamFrame = { beat, split: duet.split };
     const due = (list, cursorKey, play) => {
       if (!list.length) return;
       for (let guard = 0; guard < 64; guard++) {
@@ -1004,6 +1463,13 @@ class App {
     };
     due(ph.notes, 'cursor', (note, i) => {
       const tint = noteColor(note.midi);
+      if (duet && note.beat < duet.split) {
+        const r = this.studio.visitorNote(note.midi, tint);
+        this.visitorKeys[r.arm] = r.key;
+        this.visitorModel.pressKey(r.arm);
+        this.audio.mallet(note.midi, { duration: note.dur * spb, velocity: note.vel, pan: 0.35 });
+        return;
+      }
       if (speaker) {
         if (i % 2 === 0) this.studio.speakerNote(tint);
         this.audio.pluck(note.midi, { duration: note.dur * spb, velocity: note.vel * (mode === 'lullaby' ? 0.75 : 0.9), pan: i % 2 ? 0.35 : -0.35 });
@@ -1030,6 +1496,20 @@ class App {
 
   /** Truthful status while Sleep Practice runs (the simulation only knows it is napping). */
   decorateSnapshot(snap) {
+    const ss = this.social?.session;
+    if (ss) {
+      const n = ss.visitorName;
+      if (ss.phase === 'gathering') {
+        snap.status = ss.mode === 'jam'
+          ? { text: `Heading over to jam with ${n}`, short: 'To the jam', icon: 'music' }
+          : { text: `Heading to the easel with ${n}`, short: 'To the easel', icon: 'draw' };
+      } else if (ss.phase === 'performing' && snap.activity.plan?.mode === 'social') {
+        if (ss.mode === 'codraw') snap.status = { text: `Drawing together with ${n}`, short: 'Co-drawing', icon: 'draw' };
+        else if (ss.turn === 'visitor') snap.status = { text: `Listening to ${n}'s tune`, short: 'Listening', icon: 'listen' };
+        else snap.status = { text: `Answering ${n}'s tune`, short: 'Answering', icon: 'music' };
+      }
+      return snap;
+    }
     const st = this.practice.status;
     if (st === 'practicing' && snap.asleep) snap.status = { text: 'Practising in its dreams', short: 'Dreaming', icon: 'sleep' };
     else if (st === 'waiting') snap.status = { text: 'Heading to bed to practise', short: 'To bed', icon: 'walk' };
@@ -1062,6 +1542,7 @@ class App {
     const res = savePet(this.pet, this.storage);
     if (this.storesDirty) this.saveStores();
     if (this.modelDirty) this.saveModelNow();
+    if (this.friendsDirty) this.saveFriendsNow();
     this.lastSave = performance.now();
     this.dirty = false;
     if (!res.ok && !this.saveWarned) {
@@ -1096,7 +1577,7 @@ class App {
     window.visualViewport?.addEventListener('resize', () => this.layoutSoon());
     if ('ResizeObserver' in window) {
       const ro = new ResizeObserver(() => this.layoutSoon());
-      for (const sel of ['.topbar', '#meters', '#dock', '#customizer', '#workshop', '#practice', '#creation-bar']) {
+      for (const sel of ['.topbar', '#meters', '#dock', '#customizer', '#workshop', '#practice', '#visit', '#creation-bar']) {
         const node = document.querySelector(sel);
         if (node) ro.observe(node);
       }
@@ -1120,9 +1601,9 @@ class App {
     if (actions[key]) {
       e.preventDefault();
       this.action(actions[key]);
-    } else if (key === 't' || key === 'y' || key === 'z' || key === 'i') {
+    } else if (key === 't' || key === 'y' || key === 'z' || key === 'i' || key === 'b') {
       e.preventDefault();
-      this.openFeature({ t: 'teach', y: 'gallery', z: 'practice', i: 'inspector' }[key]);
+      this.openFeature({ t: 'teach', y: 'gallery', z: 'practice', i: 'inspector', b: 'visit' }[key]);
     } else if (key === 'm') {
       this.toggleMute();
     } else if (key >= '1' && key <= String(CAMERA_VIEWS.length)) {
@@ -1186,6 +1667,8 @@ class App {
     // The silhouette (outline points) decides; the 3D box is reported for reference only.
     const petRect = this.studio && this.model ? this.studio.screenRectOfPoints(this.model.getSilhouettePoints(this.studio.camera)) : null;
     const petBox = this.studio && this.model ? this.studio.screenRect(this.model.getWorldBox()) : null;
+    const visitorRect = this.studio && this.visitorModel && this.visitorModel.root.scale.x > 0.98
+      ? this.studio.screenRectOfPoints(this.visitorModel.getSilhouettePoints(this.studio.camera)) : null;
     const hudRects = this.hud.rects();
     const panel = this.openPanelRect();
     // The gallery and the Inspector are full sheets over the studio, so the pet is not expected to be visible then.
@@ -1214,6 +1697,37 @@ class App {
       const shown = Math.min(r.bottom, clip.bottom) - Math.max(r.top, clip.top);
       return shown > 1 && shown < r.height - 1;
     });
+    // Tables in open sheets: every table, row and cell must fit horizontally inside the
+    // dialog, its scrolling body and any other clipping ancestor (a table wrapper that
+    // scrolls sideways counts as clipping: a column hidden behind a scroll is cut off).
+    const hiddenVisually = (node, dialog) => {
+      for (let p = node; p && p !== dialog; p = p.parentElement) {
+        const cs = getComputedStyle(p);
+        if (p.classList.contains('sr-only') || (cs.clipPath && cs.clipPath !== 'none') || (cs.clip && cs.clip !== 'auto')) return true;
+      }
+      return false;
+    };
+    const tableNodes = [...document.querySelectorAll('dialog[open] table, dialog[open] tr, dialog[open] th, dialog[open] td')].filter(visible);
+    const clippedTableCells = tableNodes.filter((n) => {
+      const dialog = n.closest('dialog');
+      if (hiddenVisually(n, dialog)) return false;
+      const r = n.getBoundingClientRect();
+      let lo = -Infinity;
+      let hi = Infinity;
+      for (let p = n.parentElement; p; p = p.parentElement) {
+        if (getComputedStyle(p).overflowX !== 'visible' || p === dialog) {
+          const pr = p.getBoundingClientRect();
+          lo = Math.max(lo, pr.left);
+          hi = Math.min(hi, pr.right);
+        }
+        if (p === dialog) break;
+      }
+      return r.left < lo - 0.5 || r.right > hi + 0.5;
+    });
+    const scrollingTables = [...document.querySelectorAll('dialog[open] table')].filter(visible)
+      .map((t) => t.parentElement)
+      .filter((w) => w && w.scrollWidth > w.clientWidth + 1);
+    const describeCell = (n) => ({ tag: n.tagName.toLowerCase(), text: n.textContent.trim().replace(/\s+/g, ' ').slice(0, 40), rect: rectOf(n) });
     return {
       viewport: { width: vw, height: vh, devicePixelRatio: window.devicePixelRatio || 1, renderPixelRatio: this.perf.dpr },
       view: this.studio?.view ?? null,
@@ -1227,8 +1741,9 @@ class App {
         gallery: this.galleryView?.isOpen ? rectOf(this.galleryView.dialog) : null,
         practice: this.practiceView?.isOpen ? rectOf(this.practiceView.dialog) : null,
         inspector: this.inspector?.isOpen ? rectOf(this.inspector.dialog) : null,
+        visit: this.visitView?.isOpen ? rectOf(this.visitView.dialog) : null,
       },
-      sheet: this.sheet ?? (this.customizer?.isOpen ? 'customizer' : this.practiceView?.isOpen ? 'practice' : null),
+      sheet: this.sheet ?? (this.customizer?.isOpen ? 'customizer' : this.practiceView?.isOpen ? 'practice' : this.visitView?.isOpen ? 'visit' : null),
       dock: {
         rect: round(dockRect),
         hidden: dockHidden,
@@ -1239,6 +1754,9 @@ class App {
         insideLane: dockRect.left >= lane.left - 0.5 && dockRect.right <= lane.left + lane.width + 0.5,
       },
       slicedNotes: sliced.map(describe),
+      tableCells: tableNodes.length,
+      clippedTableCells: clippedTableCells.slice(0, 12).map(describeCell),
+      scrollingTables: scrollingTables.map((w) => ({ className: w.className, scrollWidth: w.scrollWidth, clientWidth: w.clientWidth })),
       controls: controls.length,
       clippedControls: clipped.map(describe),
       overflowingLabels: overflowing.map(describe),
@@ -1251,6 +1769,12 @@ class App {
         overlapsUI: Object.values(blockers).some((o) => overlap(petRect, o)),
         overlapsCreationBar: overlap(petRect, hudRects.bar),
       },
+      visitor: visitorRect && {
+        rect: round(visitorRect),
+        insideSafeRect: inside(visitorRect),
+        overlapsUI: Object.values(blockers).some((o) => overlap(visitorRect, o)),
+        overlapsCreationBar: overlap(visitorRect, hudRects.bar),
+      },
       fps: this.perf.fps,
     };
   }
@@ -1262,14 +1786,15 @@ class App {
     const pv = app.practiceView;
     const iv = app.inspector;
     const nn = app.neural;
+    const vv = app.visitView;
     const api = {
-      version: `${BUILD.version}-iteration-3`,
+      version: `${BUILD.version}-iteration-4`,
       build: BUILD,
-      iteration: 3,
+      iteration: 4,
       schemaVersion: SCHEMA_VERSION,
-      schemas: { pet: SCHEMA_VERSION, teach: TEACH_VERSION, gallery: GALLERY_VERSION, model: MODEL_VERSION },
+      schemas: { pet: SCHEMA_VERSION, teach: TEACH_VERSION, gallery: GALLERY_VERSION, model: MODEL_VERSION, friends: FRIENDS_VERSION, snapshot: SNAPSHOT_FORMAT },
       ready: false,
-      learning: 'on-device: two small float32 networks (MusicPolicyNet, StrokePolicyNet) train by gradient descent (Adam) during Sleep Practice on the lessons in teaching memory, with replay, held-out validation, rollback and checkpoints. Attempts stay authored until a network has trained, then blend in its output (generator neural-v1). Care, autonomy, walking and animation remain hand-written rules.',
+      learning: 'on-device: two small float32 networks (MusicPolicyNet, StrokePolicyNet) train by gradient descent (Adam) during Sleep Practice on the lessons in teaching memory, with replay, held-out validation, rollback and checkpoints. Attempts stay authored until a network has trained, then blend in its output (generator neural-v1). A visiting friend\'s demonstration can be kept as a social lesson at half weight (0.5x). Care, autonomy, walking, animation and visits remain hand-written rules.',
       get pet() { return app.pet; },
       get state() { return app.pet.snapshot(); },
       get record() { return app.pet.toJSON(); },
@@ -1438,7 +1963,51 @@ class App {
         nudge: (id) => app.feedback(id),
         dismiss: () => app.feedback('dismiss'),
       },
-      save: () => { app.saveStores(); return app.save(); },
+      /** Visit / Jam: visiting friends, jams, co-drawing, social learning and snapshots (Iteration 4). */
+      visit: {
+        open: () => { app.openFeature('visit'); return vv.isOpen; },
+        close: () => vv.close('api'),
+        get isOpen() { return vv.isOpen; },
+        get sheet() { return vv.state(); },
+        get state() { return app.social.state(); },
+        get visitor() { return app.social.describeVisitor(); },
+        get session() { return app.social.describeSession(); },
+        get lastSession() { return app.social.state().lastSession; },
+        get model() {
+          const m = app.visitorModel;
+          return m ? { pickId: m.root.userData.pickId, inScene: !!m.root.parent, scale: Math.round(m.root.scale.x * 1000) / 1000, brushArm: m.brushArm, position: { x: m.root.position.x, z: m.root.position.z } } : null;
+        },
+        /** Co-drawing: who holds the pen right now ('v' visitor, 'h' host) and on which stroke. */
+        get pen() { return app.codrawFrame ? { owner: app.codrawFrame.owner, stroke: app.studio?.penStroke ?? -1 } : null; },
+        /** Jam: the beat of the duet being played and whose turn it is. */
+        get duet() { return app.jamFrame ? { beat: Math.round(app.jamFrame.beat * 100) / 100, split: app.jamFrame.split, turn: app.social.session?.turn ?? null } : null; },
+        builtins: [...BUILTIN_IDS],
+        get friends() { return app.friends.all().map((f) => ({ id: f.id, origin: f.origin, name: f.snapshot.pet.name, snapshotId: f.snapshot.id, trained: !!f.snapshot.neural.weights, importedAt: f.importedAt })); },
+        get stats() { return { ...app.friends.stats }; },
+        get spots() { return { ...VISIT_SPOTS, xylophone: { x: XYLOPHONE.x, z: XYLOPHONE.z } }; },
+        invite: (id) => app.inviteFriend(id),
+        sendHome: () => app.sendVisitorHome(),
+        jam: () => { const r = app.startSocial('jam'); return { ok: r.ok, reason: r.reason ?? null, message: r.message ?? null }; },
+        coDraw: () => { const r = app.startSocial('codraw'); return { ok: r.ok, reason: r.reason ?? null, message: r.message ?? null }; },
+        learn: () => { const r = app.learnFromVisitor(); return { ok: r.ok, existing: !!r.existing, weight: r.weight ?? null, kind: r.kind ?? null, lessonId: r.lesson?.id ?? null, message: r.message ?? null }; },
+        /** A snapshot of the pet (object) and its JSON text, without downloading. */
+        exportSnapshot: () => app.makeSnapshot(),
+        exportJSON: () => serializeSnapshot(app.makeSnapshot()),
+        download: () => { const r = app.exportSnapshot({ download: true }); return { ok: r.ok, fileName: r.fileName ?? null, bytes: r.bytes ?? 0 }; },
+        importSnapshot: (input) => app.importSnapshot(input),
+        parse: (input) => { const r = parseSnapshot(input); return r.ok ? { ok: true, summary: snapshotSummary(r.snapshot), warnings: r.warnings } : r; },
+        remove: (id) => app.removeFriend(id),
+        greet: () => app.greetVisitor(),
+        social: SOCIAL,
+      },
+      /** Installable web app: manifest link and the offline service worker. */
+      pwa: {
+        get manifest() { return document.querySelector('link[rel="manifest"]')?.getAttribute('href') ?? null; },
+        get appleTouchIcon() { return document.querySelector('link[rel="apple-touch-icon"]')?.getAttribute('href') ?? null; },
+        get serviceWorker() { return { ...(app.sw ?? {}), controlled: !!navigator.serviceWorker?.controller }; },
+        get standalone() { return window.matchMedia?.('(display-mode: standalone)').matches ?? false; },
+      },
+      save: () => { app.saveStores(); app.saveFriendsNow(); return app.save(); },
       reset: () => {
         app.resetting = true; // the reload's pagehide must not save the cleared pet again
         app.clearAllSaves();

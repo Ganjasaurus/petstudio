@@ -11,11 +11,30 @@ import { paintDrawing, paintPhraseRoll, fitCanvas } from './creation-render.js';
 
 const NEED_ICON = { hunger: 'i-hunger', energy: 'i-energy', hygiene: 'i-hygiene', mood: 'i-mood', curiosity: 'i-curiosity', bond: 'i-bond' };
 const STATUS_ICON = { idle: 'i-mood', walk: 'i-walk', food: 'i-hunger', bath: 'i-wash', sleep: 'i-rest', music: 'i-music', draw: 'i-draw', listen: 'i-listen', teach: 'i-teach' };
-const FEEDBACK = Object.freeze(['love', 'variation', 'calmer', 'livelier', 'neater', 'wilder', 'dismiss']);
+const FEEDBACK = Object.freeze(['love', 'variation', 'calmer', 'livelier', 'neater', 'wilder', 'dismiss', 'learn']);
+
+/** One-line status for a piece made together with a visiting friend. */
+function socialStatus(s) {
+  const music = s.kind === 'music';
+  const n = s.social.visitor;
+  switch (s.phase) {
+    case 'walking': return music ? `Heading to the Music Corner with ${n}…` : `Heading to the easel with ${n}…`;
+    case 'performing':
+      if (!music) return `Taking turns at the easel with ${n}…`;
+      if (s.turn === 'visitor') return `${n} plays first. ${s.petName} listens…`;
+      if (s.turn === 'host') return `${s.petName} answers ${n} in its own style…`;
+      return `Jamming with ${n}…`;
+    case 'done':
+      if (s.learn?.learned) return `Saved, and ${n}'s idea is kept.`;
+      return s.loved ? 'Loved and saved to your Gallery.' : `Saved. Keep ${n}'s idea too?`;
+    default: return '';
+  }
+}
 
 /** One-line status for the feedback bar. */
 function barStatus(s) {
   const music = s.kind === 'music';
+  if (s.social) return socialStatus(s);
   switch (s.phase) {
     case 'lesson': return music ? 'Listening to your tune…' : 'Studying your drawing…';
     case 'walking': return music ? 'Heading to the Music Corner…' : 'Heading to the easel…';
@@ -63,6 +82,7 @@ export class Hud {
     const bar = this.el.bar;
     this.barEl = {
       thumb: bar.querySelector('.cb-thumb'), name: bar.querySelector('.cb-name'), origin: bar.querySelector('.cb-origin'), learned: bar.querySelector('.cb-learned'),
+      social: bar.querySelector('.cb-social'), learn: bar.querySelector('[data-fb="learn"]'), learnLabel: bar.querySelector('.cb-learn-label'),
       status: bar.querySelector('.cb-status'), fill: bar.querySelector('.cb-progress i'), love: bar.querySelector('[data-fb="love"]'),
       buttons: [...bar.querySelectorAll('[data-fb]')].filter((b) => b.dataset.fb !== 'dismiss'),
     };
@@ -333,20 +353,35 @@ export class Hud {
     }
     bar.hidden = false;
     const E = this.barEl;
-    const key = [state.phase, state.title, state.origin, state.loved, state.canFeedback, state.kind, state.mode, state.petName, state.ref, state.learned].join('|');
+    const social = state.social ?? null;
+    const learn = state.learn ?? null;
+    const key = [state.phase, state.title, state.origin, state.loved, state.canFeedback, state.kind, state.mode, state.petName, state.ref, state.learned,
+      social?.label ?? '', state.turn ?? '', learn ? `${learn.ok}:${learn.learned}` : ''].join('|');
     if (key !== this.last.bar) {
       this.last.bar = key;
       bar.dataset.phase = state.phase;
       bar.dataset.kind = state.kind;
+      bar.classList.toggle('social', !!social);
       E.name.textContent = state.title;
       E.origin.textContent = ORIGIN_LABELS[state.origin] ?? '';
       E.origin.dataset.origin = state.origin;
       E.learned.hidden = !state.learned || state.phase === 'lesson';
+      // Made together with a friend: a "Duet with ..." chip, and Learn From <Visitor> in place of the retry controls.
+      E.social.hidden = !social;
+      E.social.textContent = social?.label ?? '';
+      E.learn.hidden = !social;
       E.status.textContent = barStatus(state);
       for (const b of E.buttons) b.disabled = !state.canFeedback;
       E.love.disabled = !state.canFeedback || state.loved;
       E.love.setAttribute('aria-pressed', String(!!state.loved));
       E.love.querySelector('span').textContent = state.loved ? 'Loved' : 'Love It';
+      if (social) {
+        const done = !!learn?.learned;
+        E.learn.disabled = !learn?.ok || done || !state.canFeedback;
+        E.learn.setAttribute('aria-pressed', String(done));
+        E.learnLabel.textContent = done ? 'Learned' : `Learn From ${social.visitor}`;
+        E.learn.setAttribute('aria-label', done ? `Learned from ${social.visitor}` : `Learn From ${social.visitor}`);
+      }
       this.barThumb.key = null;
     }
     E.fill.style.width = `${Math.round(state.progress * 1000) / 10}%`;

@@ -7,6 +7,9 @@
  *   attempt  the pet's own take on a lesson or creation (authored variation
  *            engine; tagged with its generator so it is never mistaken for
  *            learned behaviour).
+ *   social   made together with a visiting friend (Iteration 4): a duet
+ *            (the friend's call, the pet's answer) or a co-drawn picture,
+ *            tagged "Duet with <Visitor>" / "Co-Drawn with <Visitor>".
  * Items keep their full musical / stroke data so they can be replayed,
  * compared and hung on the studio wall (one pinned drawing, persisted).
  *
@@ -16,7 +19,7 @@
  * drawing and the item just added are never evicted. Pure ES module.
  */
 import { sanitizePhrase, sanitizeDrawing, phraseIsEmpty, drawingIsEmpty } from './teaching-core.js';
-import { sanitizeStyle, sanitizeModelTag, NUDGE_IDS } from './creative-engine.js';
+import { sanitizeStyle, sanitizeModelTag, sanitizeSocialTag, socialLabel, NUDGE_IDS } from './creative-engine.js';
 import { loadVersioned, saveVersioned, removeKeys } from './persist.js';
 import { sanitizeText } from './teaching-memory.js';
 
@@ -28,8 +31,8 @@ export const GALLERY_FUTURE_KEY = 'petstudio.gallery.future';
 export const GALLERY_LIMITS = Object.freeze({ maxItems: 40, maxStarter: 10, maxBytes: 1_200_000, titleMax: 48, maxTags: 6, maxNudges: 8 });
 export const ITEM_KINDS = Object.freeze(['music', 'drawing']);
 export const KIND_LABELS = Object.freeze({ music: 'Song', drawing: 'Drawing' });
-export const ORIGINS = Object.freeze(['starter', 'taught', 'attempt']);
-export const ORIGIN_LABELS = Object.freeze({ starter: 'Starter', taught: 'Taught by You', attempt: 'Pet Attempt' });
+export const ORIGINS = Object.freeze(['starter', 'taught', 'attempt', 'social']);
+export const ORIGIN_LABELS = Object.freeze({ starter: 'Starter', taught: 'Taught by You', attempt: 'Pet Attempt', social: 'Made Together' });
 
 const ID_RE = /^[a-z0-9-]{3,64}$/i;
 const isId = (v) => typeof v === 'string' && ID_RE.test(v);
@@ -40,6 +43,7 @@ const GENERATOR_RE = /^[a-z0-9-]{1,40}$/;
 export function defaultTitle(kind, origin) {
   if (origin === 'taught') return kind === 'music' ? 'Your tune' : 'Your drawing';
   if (origin === 'attempt') return kind === 'music' ? 'Pet attempt (song)' : 'Pet attempt (drawing)';
+  if (origin === 'social') return kind === 'music' ? 'A duet' : 'A picture drawn together';
   return kind === 'music' ? 'Little tune' : 'Doodle';
 }
 
@@ -65,6 +69,7 @@ export function sanitizeItem(it) {
     generator: typeof it.generator === 'string' && GENERATOR_RE.test(it.generator) ? it.generator : null,
     style: it.style ? sanitizeStyle(it.style) : null,
     model: sanitizeModelTag(it.model),
+    social: it.origin === 'social' ? sanitizeSocialTag(it.social) : null,
     feedback: {
       reward: Number.isFinite(fb.reward) ? clamp(fb.reward, -1, 1) : 0,
       loves: Number.isInteger(fb.loves) && fb.loves >= 0 ? Math.min(fb.loves, 1e6) : 0,
@@ -150,7 +155,7 @@ export class GalleryStore {
   }
 
   counts() {
-    const c = { total: this.items.length, music: 0, drawing: 0, favorites: 0, starter: 0, taught: 0, attempt: 0 };
+    const c = { total: this.items.length, music: 0, drawing: 0, favorites: 0, starter: 0, taught: 0, attempt: 0, social: 0 };
     for (const it of this.items) {
       c[it.kind] += 1;
       c[it.origin] += 1;
@@ -236,7 +241,7 @@ export class GalleryStore {
     const pool = this.items.filter((it) => it.id !== protectId && it.id !== this.wall && filter(it));
     const tiers = [
       (it) => !it.favorite && it.origin === 'starter',
-      (it) => !it.favorite && it.origin === 'attempt',
+      (it) => !it.favorite && (it.origin === 'attempt' || it.origin === 'social'),
       (it) => !it.favorite && it.origin === 'taught',
       (it) => it.favorite,
     ];
@@ -292,6 +297,7 @@ export class GalleryStore {
       id: it.id, kind: it.kind, origin: it.origin, originLabel: ORIGIN_LABELS[it.origin], title: it.title,
       createdAt: it.createdAt, favorite: it.favorite, tags: [...it.tags], pinned: it.id === this.wall,
       lessonId: it.lessonId, parentId: it.parentId, generator: it.generator, reward: it.feedback.reward,
+      social: it.social ? { ...it.social, label: socialLabel(it.social) } : null,
       size: it.kind === 'music' ? it.data.notes.length + it.data.hits.length : it.data.strokes.length,
     }));
   }

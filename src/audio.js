@@ -129,6 +129,34 @@ export class StudioAudio {
     over.stop(stop);
   }
 
+  /**
+   * Mallet voice for a visiting friend's toy xylophone (Iteration 4): a bright
+   * sine with the inharmonic overtone of a struck bar and a quick decay, so
+   * its call is easy to tell from the host's plucked keyboard answer.
+   */
+  mallet(midi, { when = 0, duration = 0.35, velocity = 0.6, pan = 0.3 } = {}) {
+    if (!this.ready || this.muted) return;
+    const ctx = this.ctx;
+    const t0 = ctx.currentTime + Math.max(0, when);
+    const f = 440 * 2 ** ((midi - 69) / 12) * 2; // a toy xylophone sounds an octave up
+    const peak = 0.2 * Math.max(0.05, Math.min(1, velocity));
+    const amp = ctx.createGain();
+    amp.gain.setValueAtTime(0.0001, t0);
+    amp.gain.exponentialRampToValueAtTime(peak, t0 + 0.004);
+    amp.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.3 + Math.min(0.6, duration * 0.5));
+    for (const [mul, level] of [[1, 1], [3.93, 0.28]]) {
+      const osc = ctx.createOscillator();
+      osc.type = 'sine';
+      osc.frequency.value = f * mul;
+      const g = ctx.createGain();
+      g.gain.value = level;
+      osc.connect(g).connect(amp);
+      osc.start(t0);
+      osc.stop(t0 + 1);
+    }
+    this._out(amp, pan);
+  }
+
   /** Short pitch glide for chirps and bubbly bloops. */
   glide(from, to, { when = 0, duration = 0.14, velocity = 0.35, type = 'sine' } = {}) {
     if (!this.ready || this.muted) return;
@@ -266,6 +294,15 @@ export class StudioAudio {
         this.glide(330, 520, { duration: 0.12, velocity: 0.3, type: 'triangle' });
         seq([79, 84], 0.1, { duration: 0.3, velocity: 0.36 });
         break;
+      case 'visit': // ding-dong: a friend arrives
+        this.mallet(76, { velocity: 0.55 });
+        this.mallet(72, { when: 0.22, velocity: 0.5 });
+        break;
+      case 'bye':
+        this.mallet(72, { velocity: 0.45 });
+        this.mallet(67, { when: 0.2, velocity: 0.4 });
+        break;
+      case 'learn': seq([72, 76, 79], 0.08, { duration: 0.22, velocity: 0.36 }); break;
       default: break;
     }
   }

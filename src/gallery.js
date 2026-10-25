@@ -11,7 +11,7 @@
  * Registered as the real 'gallery' feature via features.register('gallery', ...).
  */
 import { ORIGIN_LABELS, KIND_LABELS } from './gallery-store.js';
-import { NUDGES } from './creative-engine.js';
+import { NUDGES, socialLabel } from './creative-engine.js';
 import { paintDrawing, paintPhraseRoll, fitCanvas } from './creation-render.js';
 import { phraseSimilarity, drawingSimilarity, drumByMidi } from './teaching-core.js';
 
@@ -20,6 +20,12 @@ const FILTERS = Object.freeze(['all', 'music', 'drawing', 'favorites']);
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const nowS = () => performance.now() / 1000;
 const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
+
+/** "Duet with Mochi" / "Co-Drawn with Mochi" for pieces made together with a visiting friend. */
+function socialBadge(it) {
+  const label = it.social ? socialLabel(it.social) : '';
+  return label ? `<span class="gl-social" title="Made together with a visiting friend">${esc(label)}</span>` : '';
+}
 
 /** "Learned" badge for creations shaped by the trained networks (generator neural-v1). */
 function learnedBadge(it) {
@@ -195,7 +201,7 @@ export class GalleryView {
         </div>
         <div class="gl-meta">
           <h3 class="gl-title">${esc(it.title)}</h3>
-          <div class="gl-badges"><span class="gl-origin" data-origin="${it.origin}">${ORIGIN_LABELS[it.origin]}</span>${learnedBadge(it)}<span class="gl-kind">${KIND_LABELS[it.kind]}</span>${tags}</div>
+          <div class="gl-badges"><span class="gl-origin" data-origin="${it.origin}">${ORIGIN_LABELS[it.origin]}</span>${socialBadge(it)}${learnedBadge(it)}<span class="gl-kind">${KIND_LABELS[it.kind]}</span>${tags}</div>
           <time datetime="${new Date(it.createdAt).toISOString()}">${relativeTime(it.createdAt)}</time>
         </div>
         <div class="gl-actions">
@@ -352,7 +358,7 @@ export class GalleryView {
         <canvas aria-label="${esc(it.title)}"></canvas>
         <figcaption>
           <strong>${esc(it.title)}</strong>
-          <span class="gl-badges"><span class="gl-origin" data-origin="${it.origin}">${ORIGIN_LABELS[it.origin]}</span>${learnedBadge(it)}${it.tags.map((t) => `<span class="gl-tag">${NUDGES[t]?.label ?? t}</span>`).join('')}</span>
+          <span class="gl-badges"><span class="gl-origin" data-origin="${it.origin}">${ORIGIN_LABELS[it.origin]}</span>${socialBadge(it)}${learnedBadge(it)}${it.tags.map((t) => `<span class="gl-tag">${NUDGES[t]?.label ?? t}</span>`).join('')}</span>
           <time datetime="${new Date(it.createdAt).toISOString()}">${relativeTime(it.createdAt)}</time>
         </figcaption>
         ${it.kind === 'music' ? `<button type="button" class="btn" data-gl="play-${key}">${useIcon('i-play')}<span>Play</span></button>` : ''}

@@ -424,13 +424,16 @@ function starShape(outer, inner, points = 5) {
 export class PetModel {
   /**
    * @param {object} appearance  sanitised appearance from pet-state.js
-   * @param {{reducedMotion?: boolean}} [opts]
+   * @param {{reducedMotion?: boolean, brushHand?: 'right'|'left', pickId?: string}} [opts]
+   *   `brushHand: 'left'` mirrors the painter (a visiting friend paints from the other side of the easel).
    */
-  constructor(appearance, { reducedMotion = false } = {}) {
+  constructor(appearance, { reducedMotion = false, brushHand = 'right', pickId = 'pet' } = {}) {
     this.reducedMotion = reducedMotion;
+    this.brushArm = brushHand === 'left' ? 0 : 1; // arm 0 = the pet's left (+x), 1 = its right
+    this.paletteArm = 1 - this.brushArm;
     this.root = new THREE.Group();
-    this.root.name = 'pet';
-    this.root.userData.pickId = 'pet';
+    this.root.name = pickId;
+    this.root.userData.pickId = pickId;
     this.pose = new THREE.Group();
     this.root.add(this.pose);
     this.geometries = new Set();
@@ -515,7 +518,7 @@ export class PetModel {
     this.brush.add(handle, ferrule, tip);
     this.brush.position.y = -0.2;
     this.brush.visible = false;
-    this.armPivots[1].add(this.brush);
+    this.armPivots[this.brushArm].add(this.brush);
     this.palette = new THREE.Group();
     const board = this._mesh(new THREE.CylinderGeometry(0.12, 0.12, 0.018, 20), palette, { outline: 0.008 });
     board.scale.set(1, 1, 0.78);
@@ -530,7 +533,7 @@ export class PetModel {
     this.palette.position.set(0, -0.25, 0.05);
     this.palette.rotation.x = 1.25;
     this.palette.visible = false;
-    this.armPivots[0].add(this.palette);
+    this.armPivots[this.paletteArm].add(this.palette);
 
     this.feetGroup = new THREE.Group();
     this.pose.add(this.feetGroup);
@@ -789,6 +792,7 @@ export class PetModel {
       a.glance = { cam: Math.random() < camChance, yaw: (Math.random() - 0.5) * 1.5, pitch: (Math.random() - 0.5) * 0.35 };
       a.glanceTimer = 1.4 + Math.random() * 2.6;
     }
+    if (ctx.lookAt) return ctx.lookAt; // a scripted focus: the friend it is jamming with, the shared canvas
     if (act === 'lesson' && ctx.cameraPosition) return ctx.cameraPosition; // attending to you, the teacher
     if (act === 'drawing' && ctx.penTarget && !a.glance.cam) return ctx.penTarget;
     if (act === 'playing_music' && ctx.keyTargets && !a.glance.cam) return ctx.keyTargets[0] ?? null;
@@ -992,11 +996,14 @@ export class PetModel {
       tailSpeed += 4 * W.play;
     }
     for (let i = 0; i < 2; i++) a.press[i] = Math.max(0, a.press[i] - dt * 6);
-    // Drawing: right arm follows the brush on the canvas, left arm holds the palette.
+    // Drawing: the brush arm follows the pen on the canvas, the other arm holds the palette.
     if (W.draw > 0.001) {
-      const aim = ctx.penTarget ? this._aimArm(1, ctx.penTarget) : { x: -1.5, z: -0.3 };
-      st.arms[1] = { x: lerp(st.arms[1].x, aim.x, W.draw), z: lerp(st.arms[1].z, aim.z, W.draw) };
-      st.arms[0] = { x: lerp(st.arms[0].x, -0.85, W.draw), z: lerp(st.arms[0].z, 0.5, W.draw) };
+      const b = this.brushArm;
+      const p = this.paletteArm;
+      const side = (i) => (i === 0 ? 1 : -1); // outward rotation sign of each arm
+      const aim = ctx.penTarget ? this._aimArm(b, ctx.penTarget) : { x: -1.5, z: 0.3 * side(b) };
+      st.arms[b] = { x: lerp(st.arms[b].x, aim.x, W.draw), z: lerp(st.arms[b].z, aim.z, W.draw) };
+      st.arms[p] = { x: lerp(st.arms[p].x, -0.85, W.draw), z: lerp(st.arms[p].z, 0.5 * side(p), W.draw) };
       st.rotZ += Math.sin(a.t * 2.4) * 0.025 * W.draw;
     }
     this.brush.visible = W.draw > 0.5;

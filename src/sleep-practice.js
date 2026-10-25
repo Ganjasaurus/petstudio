@@ -16,6 +16,11 @@ import { KIND_LABELS } from './gallery-store.js';
 
 const useIcon = (id) => `<svg class="ico" aria-hidden="true"><use href="#${id}"></use></svg>`;
 const fmt = (v, digits = 3) => (Number.isFinite(v) ? v.toFixed(digits) : '–');
+/** "Your Sunny Arp" for your lessons; a visitor's lesson keeps its own name ("Mochi's Moonlit Lullaby"). */
+export function lessonName(lesson, kind = lesson?.kind) {
+  if (lesson?.source === 'social') return lesson.title ?? `${lesson.from?.name ?? 'A friend'}'s ${kind === 'music' ? 'tune' : 'drawing'}`;
+  return lesson?.title ? `Your ${lesson.title}` : kind === 'music' ? 'Your tune' : 'Your drawing';
+}
 const pct = (v) => `${Math.round((Number.isFinite(v) ? v : 0) * 100)}%`;
 
 /** Small SVG loss chart (log scale) shared with the Inspector; its viewBox follows its CSS size. */
@@ -333,11 +338,11 @@ export class SleepPracticeView {
     this.stat.conf.title = 'Blend weight of the learned network for this lesson: grows with practice steps and with how often this lesson was practised. A schedule, not a quality score.';
     const d = st.dream;
     const lesson = d ? this.app.memory.getLesson(d.lessonId) : null;
-    this.el.dreamTitle.textContent = d ? (lesson?.title ? `Your ${lesson.title}` : d.kind === 'music' ? 'Your tune' : 'Your drawing') : '–';
+    this.el.dreamTitle.textContent = d ? lessonName(lesson, d.kind) : '–';
     const replay = st.replaying.length;
     const newest = this.app.memory.lessonsOf(d?.kind ?? 'music')[0]?.id === d?.lessonId;
     this.el.dreamSub.textContent = d
-      ? `${KIND_LABELS[d.kind]} lesson${newest ? ' · newest' : ''}${replay ? ` · also replaying ${replay} other${replay === 1 ? '' : 's'}` : ''}${st.frozen.length ? ` · ${st.frozen.join(' and ')} paused (held-out loss rising)` : ''}`
+      ? `${KIND_LABELS[d.kind]} lesson${lesson?.source === 'social' ? ` from ${lesson.from?.name ?? 'a friend'}'s visit (half weight)` : newest ? ' · newest' : ''}${replay ? ` · also replaying ${replay} other${replay === 1 ? '' : 's'}` : ''}${st.frozen.length ? ` · ${st.frozen.join(' and ')} paused (held-out loss rising)` : ''}`
       : '';
   }
 
@@ -396,7 +401,7 @@ export class SleepPracticeView {
     if (key === this.compareKey) return;
     this.compareKey = key;
     const lesson = this.app.memory.getLesson(c.lessonId);
-    this.el.compareSub.textContent = `${lesson?.title ? `Your ${lesson.title}` : c.kind === 'music' ? 'Your tune' : 'Your drawing'}: same seeds and style before and after. Closeness to your lesson, averaged over ${c.seeds} tries:`;
+    this.el.compareSub.textContent = `${lessonName(lesson, c.kind)}: same seeds and style before and after. Closeness to the lesson, averaged over ${c.seeds} tries:`;
     for (const side of ['before', 'after']) {
       const fig = this.el.compare.querySelector(`[data-side="${side}"]`);
       const cv = fig.querySelector('canvas');

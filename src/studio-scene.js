@@ -6,12 +6,15 @@
  * Easel, Sleep Nook, Snack Bar, Bubble Bath), a gallery frame on the left wall
  * that shows the drawing hung from the Gallery (with a title plaque), all 22
  * playable keyboard keys, particles, a responsive camera rig with station
- * focus presets, and raycast picking of stations, frame and pet.
+ * focus presets, and raycast picking of stations, frame and pet. Iteration 4
+ * adds a visiting friend: a second pet model, its toy xylophone (shown while
+ * it visits) and camera presets that frame both pets for a jam or a co-draw.
  * All geometry and textures are procedural and original.
  */
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
-import { ROOM, STATIONS } from './studio-layout.js';
+import { ROOM, STATIONS, VISIT_SPOTS, XYLOPHONE, xylophoneBar } from './studio-layout.js';
+import { noteColor } from './teaching-core.js';
 import { makeToonMaterial } from './toon.js';
 import { ParticleSystem } from './particles.js';
 import { DrawingSurface } from './drawing-surface.js';
@@ -32,8 +35,8 @@ export const CAMERA_VIEWS = Object.freeze([
   { id: 'sleep', label: 'Sleep Nook', icon: 'sleep' },
 ]);
 
-/** Extra camera presets used by the app (not shown in the view switcher). */
-export const EXTRA_VIEWS = Object.freeze(['wall']);
+/** Extra camera presets used by the app (not shown in the view switcher): the wall frame, and both pets jamming or co-drawing. */
+export const EXTRA_VIEWS = Object.freeze(['wall', 'jam', 'codraw']);
 
 /** White keys of the studio keyboard, C4..A5, matching the starter phrase range. */
 export const KEYBOARD_MIDI = Object.freeze([60, 62, 64, 65, 67, 69, 71, 72, 74, 76, 77, 79, 81]);
@@ -566,9 +569,10 @@ function buildEasel(P, maxAniso) {
   board.add(paper);
   board.add(mesh(rbox(0.3, 0.06, 0.07, 0.02), P.wood, { pos: [0, 0.45, 0.01] }));
 
-  // Little stool with a brush jar and paint pots (on the side away from the painter).
+  // Little stool with a brush jar and paint pots, tucked behind the easel's free side
+  // (a visiting friend paints from that side).
   const stool = new THREE.Group();
-  stool.position.set(-0.78, 0, 0.28);
+  stool.position.set(-0.74, 0, -0.34);
   stool.add(mesh(new THREE.CylinderGeometry(0.17, 0.17, 0.05, 20), P.woodLight, { pos: [0, 0.42, 0] }));
   for (let i = 0; i < 3; i++) {
     const a = (i / 3) * TAU + 0.4;
@@ -778,6 +782,69 @@ function buildBath(P) {
   };
 }
 
+/**
+ * The visitor's toy xylophone (Iteration 4): ten pastel bars on a little
+ * X-stand beside the keyboard. It pops in while a friend visits; a played bar
+ * dips and glows. The player stands at local -z facing +z, so low notes sit
+ * on its left (+x), like the studio keyboard.
+ */
+function buildXylophone(P) {
+  const g = new THREE.Group();
+  g.name = 'visitor-xylophone';
+  g.position.set(XYLOPHONE.x, 0, XYLOPHONE.z);
+  g.rotation.y = XYLOPHONE.yaw;
+  g.visible = false;
+  g.scale.setScalar(0.001);
+  for (const sx of [-0.25, 0.25]) {
+    g.add(limb([sx, 0.03, -0.13], [sx, 0.5, 0.1], 0.017, P.ink));
+    g.add(limb([sx, 0.03, 0.1], [sx, 0.5, -0.13], 0.017, P.ink));
+    g.add(mesh(rbox(0.05, 0.035, 0.32, 0.012), P.ink, { pos: [sx, 0.018, -0.015] }));
+  }
+  for (const z of [-0.075, 0.075]) g.add(mesh(rbox(0.64, 0.035, 0.04, 0.012), P.woodLight, { pos: [0, 0.525, z] }));
+  const n = XYLOPHONE.bars.length;
+  const bars = XYLOPHONE.bars.map((midi, i) => {
+    const mat = makeToonMaterial({ color: noteColor(midi), rim: 0.16, gloss: 0.4, emissive: noteColor(midi), emissiveIntensity: 0 });
+    const len = 0.27 - (i / (n - 1)) * 0.1;
+    const bar = mesh(rbox(0.05, 0.022, len, 0.009, 2), mat, { pos: [0.243 - i * 0.054, 0.556, 0] });
+    bar.userData = { baseY: 0.556, press: 0, mat, tip: new THREE.Vector3(0, 0.03, -0.02) };
+    g.add(bar);
+    return bar;
+  });
+  // Two little mallet heads rest on the frame (the visitor's paws do the playing).
+  for (const x of [-0.29, 0.29]) g.add(mesh(new THREE.SphereGeometry(0.026, 12, 8), P.coral, { pos: [x, 0.565, 0.11] }));
+  let show = 0;
+  return {
+    group: g,
+    bars,
+    get shown() {
+      return g.visible;
+    },
+    keyWorld(midi, target = new THREE.Vector3()) {
+      const bar = bars[xylophoneBar(midi)];
+      return bar.localToWorld(target.copy(bar.userData.tip));
+    },
+    /** Paw that plays a bar: 0 = the visitor's left (low bars), 1 = its right. */
+    armFor(midi) {
+      return xylophoneBar(midi) < n / 2 ? 0 : 1;
+    },
+    press(midi) {
+      bars[xylophoneBar(midi)].userData.press = 1;
+    },
+    update(dt, visible) {
+      show = damp(show, visible ? 1 : 0, visible ? 7 : 9, dt);
+      const s = show < 0.01 ? 0 : show > 0.995 ? 1 : 1 + 2.70158 * (show - 1) ** 3 + 1.70158 * (show - 1) ** 2;
+      g.visible = show > 0.01;
+      g.scale.setScalar(Math.max(0.001, s));
+      for (const b of bars) {
+        const u = b.userData;
+        u.press = Math.max(0, u.press - dt * 6);
+        b.position.y = u.baseY - u.press * 0.012;
+        u.mat.emissiveIntensity = u.press * 0.55;
+      }
+    },
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Camera rig: presets, responsive framing inside the UI-free area, damping
 // ---------------------------------------------------------------------------
@@ -878,6 +945,18 @@ export class CameraRig {
       case 'wall':
         // The gallery frame on the left wall (faces +x), seen from inside the room.
         return { id, target: new THREE.Vector3(-ROOM.half + 0.06, 1.66, 1.0), yaw: deg(76), pitch: deg(9), radius: 0.66 };
+      case 'jam': {
+        // Both pets at the Music Corner: the host at the keyboard, the visitor at its xylophone.
+        const h = STATIONS.music.anchor;
+        const v = VISIT_SPOTS.jam;
+        return { id, target: new THREE.Vector3((h.x + v.x) / 2 - 0.02, 1.02, (h.z + v.z) / 2 + 0.1), yaw: deg(24), pitch: deg(portrait ? 22 : 18), radius: portrait ? 1.66 : 1.56 };
+      }
+      case 'codraw': {
+        // Both painters and the shared canvas between them.
+        const h = STATIONS.easel.anchor;
+        const v = VISIT_SPOTS.codraw;
+        return { id, target: new THREE.Vector3((h.x + v.x) / 2 - 0.16, 1.04, (h.z + v.z) / 2 + 0.04), yaw: deg(66), pitch: deg(portrait ? 17 : 14), radius: portrait ? 1.66 : 1.52 };
+      }
       default:
         return { id: 'overview', target: new THREE.Vector3(-0.1, 1.0, -0.1), yaw: deg(42), pitch: deg(portrait ? 44 : 30), points: this.overview, center: true };
     }
@@ -1063,7 +1142,7 @@ export class CameraRig {
 // ---------------------------------------------------------------------------
 // The studio
 // ---------------------------------------------------------------------------
-const HOVER_RADIUS = { food: 0.78, bath: 1.0, bed: 1.0, music: 1.0, easel: 0.85, rug: 1.3, pet: 0.55 };
+const HOVER_RADIUS = { food: 0.78, bath: 1.0, bed: 1.0, music: 1.0, easel: 0.85, rug: 1.3, pet: 0.55, visitor: 0.55 };
 
 export class StudioScene {
   /**
@@ -1112,6 +1191,9 @@ export class StudioScene {
       this.pickables.push(rug);
     }
     this.pickables.push(this.creation.frame);
+    this.xylophone = buildXylophone(this.palette);
+    this.scene.add(this.xylophone.group);
+    this.visitor = null;
     this.wallArt = { hasArt: false, pinned: false, title: '' };
     this.setWallArt(null);
 
@@ -1167,15 +1249,42 @@ export class StudioScene {
     this.scene.add(petModel.root);
   }
 
+  /** A visiting friend's model joins the studio (pickable as 'visitor'); null removes it. */
+  setVisitor(model) {
+    if (this.visitor && this.visitor !== model) this.visitor.root.removeFromParent();
+    this.visitor = model ?? null;
+    if (model) {
+      model.root.userData.pickId = 'visitor';
+      this.scene.add(model.root);
+    }
+  }
+
+  /** Visual side of a note the visitor plays on its xylophone: a bar dips and a note floats up. */
+  visitorNote(midi, tint) {
+    const x = this.xylophone;
+    x.press(midi);
+    this.particles.emit('note', x.keyWorld(midi, this._v).add(this._v2.set(0, 0.28, 0)), { tint });
+    return { arm: x.armFor(midi), key: x.keyWorld(midi, new THREE.Vector3()) };
+  }
+
+  /** World positions of two xylophone bars (where the visitor's paws rest while it plays). */
+  xylophoneTargets(lo = 64, hi = 76) {
+    return [this.xylophone.keyWorld(lo, new THREE.Vector3()), this.xylophone.keyWorld(hi, new THREE.Vector3())];
+  }
+
   resize(width, height, safe, pixelRatio = 1) {
     // Re-assigning a canvas size clears it even when nothing changed, so only touch it on a real change.
     const size = `${width}x${height}@${pixelRatio}`;
-    if (size !== this._size) {
+    const changed = size !== this._size;
+    if (changed) {
       this._size = size;
       this.renderer.setPixelRatio(pixelRatio);
       this.renderer.setSize(width, height, false);
     }
     this.rig.setViewport(width, height, safe);
+    // A resized canvas is blank until the next draw. Adaptive quality resizes it from inside the
+    // frame loop (after that frame's render), so draw again now: a cleared frame is never shown.
+    if (changed && this._rendered) this.render();
   }
 
   setView(id, opts) {
@@ -1191,7 +1300,7 @@ export class StudioScene {
     const rect = this.canvas.getBoundingClientRect();
     const ndc = new THREE.Vector2(((clientX - rect.left) / rect.width) * 2 - 1, -((clientY - rect.top) / rect.height) * 2 + 1);
     this.raycaster.setFromCamera(ndc, this.camera);
-    const targets = this.pet ? [this.pet.root, ...this.pickables] : this.pickables;
+    const targets = [this.pet?.root, this.visitor?.root, ...this.pickables].filter(Boolean);
     for (const hit of this.raycaster.intersectObjects(targets, true)) {
       let o = hit.object;
       while (o && !o.userData.pickId) o = o.parent;
@@ -1254,6 +1363,11 @@ export class StudioScene {
 
   get paintColor() {
     return this.stations.easel.surface.pen?.color ?? null;
+  }
+
+  /** Index of the stroke the easel is painting (-1 when idle): co-drawn pictures take turns by stroke. */
+  get penStroke() {
+    return this.stations.easel.surface.pen?.stroke ?? -1;
   }
 
   /** Copies the easel picture into the wall frame (fallback when nothing is hung from the Gallery). */
@@ -1331,6 +1445,7 @@ export class StudioScene {
     const act = frame.activity;
     const s = this.stations;
     s.music.update(dt, { active: act === 'playing_music', listening: act === 'listening' });
+    this.xylophone.update(dt, !!frame.visiting);
     s.easel.update(dt);
     s.bed.update(dt, { sleeping: act === 'sleeping' });
     s.food.update(dt, { eating: act === 'eating' });
@@ -1381,8 +1496,8 @@ export class StudioScene {
     const ring = this.hoverRing;
     let target = 0;
     if (this.hover) {
-      const id = this.hover === 'pet' ? 'pet' : this.hover.replace('station:', '');
-      const c = id === 'pet' ? frame.petFocus : STATIONS[id]?.center;
+      const id = this.hover === 'pet' || this.hover === 'visitor' ? this.hover : this.hover.replace('station:', '');
+      const c = id === 'pet' ? frame.petFocus : id === 'visitor' ? frame.visitorFocus : STATIONS[id]?.center;
       if (c) {
         ring.position.x = c.x;
         ring.position.z = c.z;
@@ -1398,6 +1513,7 @@ export class StudioScene {
 
   render() {
     this.renderer.render(this.scene, this.camera);
+    this._rendered = true;
   }
 
   /** Projects a world point to CSS pixels (relative to the canvas). */
@@ -1451,6 +1567,9 @@ export class StudioScene {
       pixelRatio: this.renderer.getPixelRatio(),
       particles: this.particles.activeCount,
       wallArt: { ...this.wallArt },
+      pets: 1 + (this.visitor ? 1 : 0),
+      visitor: !!this.visitor,
+      xylophone: this.xylophone.shown,
     };
   }
 

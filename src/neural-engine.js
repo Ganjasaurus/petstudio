@@ -27,7 +27,9 @@
  * an untrained network predicts exactly that prior.
  *
  * Training data comes from the teaching memory: demonstrations are the
- * supervised targets (weight 1.0); loved creations join as reward-weighted
+ * supervised targets (weight 1.0; a visiting friend's demonstration kept as
+ * social inspiration weighs 0.5 and never takes the newest-lesson share of a
+ * batch from your own lessons); loved creations join as reward-weighted
  * preference examples (never as corrected labels); style nudges add
  * documented style augmentations of each lesson. Held-out notes and stroke
  * samples (1 in 5, chosen by hash before any augmentation) form the
@@ -1018,8 +1020,11 @@ export function contentKey(kind, data) {
  * { lessons: [{ id, kind, createdAt, demo }], loved: [{ id, kind, data, lessonId, reward }],
  *   prefs: { energy, order }, nudgeCounts: { calmer, ... }, traits }.
  * Examples carry their role ('demo' | 'style' | 'pref'), weight and source.
- * The held-out split is decided per source position before augmentation, so
- * a style copy of a held-out note is held out too.
+ * A lesson's weight (1 for yours, 0.5 for a visitor's social demonstration)
+ * scales its demonstration and style-copy examples. The newest lesson (half
+ * of every batch) is your newest one; social lessons are replayed with the
+ * older ones. The held-out split is decided per source position before
+ * augmentation, so a style copy of a held-out note is held out too.
  */
 export function buildDatasets(raw, settings = DEFAULT_SETTINGS) {
   const holdout = settings.holdout ?? DEFAULT_SETTINGS.holdout;
@@ -1034,33 +1039,39 @@ export function buildDatasets(raw, settings = DEFAULT_SETTINGS) {
   const lessons = (raw?.lessons ?? []).filter((l) => l && ID_RE.test(l.id) && (l.kind === 'music' || l.kind === 'drawing'));
   const out = {};
   for (const kind of MODEL_KINDS) {
-    const set = { train: [], val: [], lessons: [], newest: null, counts: { demo: 0, style: 0, pref: 0 }, styled, styleWeight };
+    const set = { train: [], val: [], lessons: [], newest: null, counts: { demo: 0, style: 0, pref: 0, social: 0 }, styled, styleWeight };
     const ofKind = lessons.filter((l) => l.kind === kind).sort((a, b) => num(a.createdAt, 0) - num(b.createdAt, 0));
     const byId = new Map();
     for (const l of ofKind) {
       const demo = kind === 'music' ? sanitizePhrase(l.demo) : sanitizeDrawing(l.demo);
       if (kind === 'music' ? phraseIsEmpty(demo) : drawingIsEmpty(demo)) continue;
       byId.set(l.id, demo);
-      set.lessons.push({ id: l.id, title: l.title ?? null, createdAt: num(l.createdAt, 0), key: contentKey(kind, demo) });
+      const social = l.source === 'social';
+      const lw = clamp(num(l.weight, social ? 0.5 : 1), 0.05, 1);
+      set.lessons.push({ id: l.id, title: l.title ?? null, createdAt: num(l.createdAt, 0), key: contentKey(kind, demo), source: social ? 'social' : 'player', weight: lw });
       const before = set.train.length + set.val.length;
       if (kind === 'music') {
-        musicExamples(demo, demo, { src: l.id, lesson: l.id, role: 'demo', w: 1, style: neutral, traits, holdout, out: set });
+        musicExamples(demo, demo, { src: l.id, lesson: l.id, role: 'demo', w: lw, style: neutral, traits, holdout, out: set });
       } else {
-        drawExamples(demo, { src: l.id, lesson: l.id, role: 'demo', w: 1, style: neutral, traits, holdout, out: set, shape: NEUTRAL_SHAPE, steady: 0.97 });
+        drawExamples(demo, { src: l.id, lesson: l.id, role: 'demo', w: lw, style: neutral, traits, holdout, out: set, shape: NEUTRAL_SHAPE, steady: 0.97 });
       }
       const mid = set.train.length + set.val.length;
       set.counts.demo += mid - before;
       if (styled) {
         if (kind === 'music') {
-          musicExamples(stylePhrase(demo, prefs), demo, { src: l.id, lesson: l.id, role: 'style', w: styleWeight, style: prefs, traits, holdout, out: set, heldOut: heldOutSlots(demo, l.id, holdout) });
+          musicExamples(stylePhrase(demo, prefs), demo, { src: l.id, lesson: l.id, role: 'style', w: styleWeight * lw, style: prefs, traits, holdout, out: set, heldOut: heldOutSlots(demo, l.id, holdout) });
         } else {
           const shape = strokeStyle(prefs);
-          drawExamples(demo, { src: l.id, lesson: l.id, role: 'style', w: styleWeight, style: prefs, traits, holdout, out: set, shape, steady: shape.steady });
+          drawExamples(demo, { src: l.id, lesson: l.id, role: 'style', w: styleWeight * lw, style: prefs, traits, holdout, out: set, shape, steady: shape.steady });
         }
         set.counts.style += set.train.length + set.val.length - mid;
       }
+      if (social) set.counts.social += set.train.length + set.val.length - before;
     }
-    set.newest = set.lessons.length ? set.lessons[set.lessons.length - 1].id : null;
+    // Your newest lesson keeps the newest-lesson share of every batch; a visitor's lesson leads only when it is all there is.
+    const own = set.lessons.filter((x) => x.source !== 'social');
+    const lead = own.length ? own : set.lessons;
+    set.newest = lead.length ? lead[lead.length - 1].id : null;
     const loved = (raw?.loved ?? []).filter((it) => it && it.kind === kind && ID_RE.test(it.id)).slice(-MODEL_LIMITS.prefsPerKind);
     for (const it of loved) {
       const w = 0.5 * clamp(num(it.reward, 0.6), 0, 1);
@@ -2206,13 +2217,80 @@ export function clearModel(storage = globalThis.localStorage) {
   return removeKeys(storage, [MODEL_KEY, MODEL_BACKUP_KEY]);
 }
 
+// ---------------------------------------------------------------------------
+// Compact weights for portable pet snapshots (Iteration 4)
+// ---------------------------------------------------------------------------
+/**
+ * The live weights of both networks in a compact, portable form: base64
+ * float32 (lossless), step counts and the architecture identity. No optimizer
+ * state, history or lesson data: a snapshot shares the pet, not its lessons.
+ * Untrained networks travel as `weights: null` (the baseline is rebuilt).
+ */
+export function compactWeights(engine) {
+  const steps = { music: engine.stepsFor('music'), drawing: engine.stepsFor('drawing') };
+  return {
+    featureSchema: FEATURE_SCHEMA,
+    baseline: BASELINE_ID,
+    generator: NEURAL_GENERATOR,
+    dims: { music: [...engine.nets.music.mlp.dims], drawing: [...engine.nets.drawing.mlp.dims] },
+    parameters: engine.parameterCount,
+    steps,
+    weights: steps.music + steps.drawing > 0
+      ? { music: encodeFloat32(engine.nets.music.params), drawing: encodeFloat32(engine.nets.drawing.params) }
+      : null,
+  };
+}
+
+/**
+ * Validates compact weights from an untrusted snapshot: the same feature
+ * schema, baseline and layer sizes, exact base64 lengths, and finite values
+ * within MODEL_LIMITS.maxWeight. Returns { music, drawing } Float32Arrays, or
+ * null when anything is off (the snapshot then travels without weights).
+ */
+export function decodeCompactWeights(c) {
+  if (!c || typeof c !== 'object' || !c.weights || typeof c.weights !== 'object') return null;
+  if (c.featureSchema !== FEATURE_SCHEMA || c.baseline !== BASELINE_ID) return null;
+  const same = (a, b) => Array.isArray(a) && a.length === b.length && a.every((v, i) => v === b[i]);
+  if (!same(c.dims?.music, [MUSIC_SPEC.inDim, MUSIC_SPEC.hidden, MUSIC_SPEC.outDim])
+    || !same(c.dims?.drawing, [DRAW_SPEC.inDim, DRAW_SPEC.hidden, DRAW_SPEC.outDim])) return null;
+  const out = {};
+  for (const kind of MODEL_KINDS) {
+    const arr = decodeFloat32(c.weights[kind], MODEL_SIZES[kind]);
+    if (!validWeights(arr)) return null;
+    out[kind] = arr;
+  }
+  return out;
+}
+
+/**
+ * A separate, never-persisted engine holding a visitor's weights (or the
+ * untrained baseline when it has none). It only composes the visitor's own
+ * pieces and never trains here, so the visitor stays the snapshot it arrived
+ * as, and the host's networks are untouched by it.
+ */
+export function engineFromCompactWeights(c, { clock } = {}) {
+  const engine = new NeuralEngine({ clock });
+  const w = decodeCompactWeights(c);
+  if (w) {
+    for (const kind of MODEL_KINDS) {
+      const n = engine.nets[kind];
+      n.params.set(w[kind]);
+      n.steps = Number.isInteger(c.steps?.[kind]) && c.steps[kind] >= 0 ? Math.min(c.steps[kind], 1e7) : 0;
+    }
+  }
+  return engine;
+}
+
 /**
  * Plain training data from the teaching memory and the gallery (the replay
  * buffer the trainer reads). Loved and starred creations of the pet are
  * preference examples, never corrected labels.
  */
 export function trainingDataFrom(memory, gallery, traits) {
-  const lessons = (memory?.lessons ?? []).map((l) => ({ id: l.id, kind: l.kind, createdAt: l.createdAt, title: l.title, demo: l.demo }));
+  const lessons = (memory?.lessons ?? []).map((l) => ({
+    id: l.id, kind: l.kind, createdAt: l.createdAt, title: l.title, demo: l.demo,
+    source: l.source === 'social' ? 'social' : 'player', weight: Number.isFinite(l.weight) ? l.weight : 1,
+  }));
   const items = Array.isArray(gallery?.items) ? gallery.items : [];
   const loved = items
     .filter((it) => (it.origin === 'attempt' || it.origin === 'starter') && (it.feedback?.reward > 0 || it.favorite))

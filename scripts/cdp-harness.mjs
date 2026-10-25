@@ -12,10 +12,12 @@ import { existsSync, readFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { createRequire } from 'node:module';
 
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
   '.map': 'application/json', '.json': 'application/json', '.png': 'image/png', '.svg': 'image/svg+xml',
+  '.webmanifest': 'application/manifest+json',
 };
 
 /** Static file server for a directory; resolves to { url, close }. */
@@ -56,6 +58,93 @@ export function findBrowser() {
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** Minimal PNG decoder (8-bit RGB / RGBA, non-interlaced; what Chrome screenshots use). */
+export function decodePng(buf) {
+  const { inflateSync } = createRequire(import.meta.url)('node:zlib');
+  let pos = 8;
+  let width = 0;
+  let height = 0;
+  let channels = 4;
+  const idat = [];
+  while (pos < buf.length) {
+    const len = buf.readUInt32BE(pos);
+    const type = buf.toString('ascii', pos + 4, pos + 8);
+    const data = buf.subarray(pos + 8, pos + 8 + len);
+    if (type === 'IHDR') {
+      width = data.readUInt32BE(0);
+      height = data.readUInt32BE(4);
+      if (data[8] !== 8 || data[12] !== 0) throw new Error('decodePng: only 8-bit, non-interlaced PNGs');
+      channels = data[9] === 6 ? 4 : data[9] === 2 ? 3 : 0;
+      if (!channels) throw new Error('decodePng: only RGB / RGBA PNGs');
+    } else if (type === 'IDAT') idat.push(data);
+    else if (type === 'IEND') break;
+    pos += 12 + len;
+  }
+  const raw = inflateSync(Buffer.concat(idat));
+  const stride = width * channels;
+  const px = new Uint8Array(height * stride);
+  for (let y = 0; y < height; y++) {
+    const f = raw[y * (stride + 1)];
+    const src = y * (stride + 1) + 1;
+    const row = y * stride;
+    for (let x = 0; x < stride; x++) {
+      const a = x >= channels ? px[row + x - channels] : 0;
+      const b = y ? px[row - stride + x] : 0;
+      const c = x >= channels && y ? px[row - stride + x - channels] : 0;
+      let v = raw[src + x];
+      if (f === 1) v += a;
+      else if (f === 2) v += b;
+      else if (f === 3) v += (a + b) >> 1;
+      else if (f === 4) {
+        const p = a + b - c;
+        const pa = Math.abs(p - a);
+        const pb = Math.abs(p - b);
+        const pc = Math.abs(p - c);
+        v += pa <= pb && pa <= pc ? a : pb <= pc ? b : c;
+      }
+      px[row + x] = v & 255;
+    }
+  }
+  return { width, height, channels, px };
+}
+
+/**
+ * Visual detail inside a rect of a screenshot, measured at CSS-pixel scale
+ * (`scale` = device pixels per CSS pixel), so adaptive render resolution and
+ * upscaling do not change it: the luminance standard deviation and the mean
+ * luminance step across 2 CSS px. A rendered studio is full of colour and
+ * outlines (std 15 and up even for a bare wall close-up); a blank WebGL
+ * canvas shows only the page's soft gradient (std about 3, step about 0.3).
+ */
+export function imageDetail(png, rect, scale = 1) {
+  const img = decodePng(png);
+  const step = Math.max(1, Math.round(2 * scale));
+  const x0 = Math.max(0, Math.floor(rect.x));
+  const y0 = Math.max(0, Math.floor(rect.y));
+  const x1 = Math.min(img.width - 1 - step, Math.floor(rect.x + rect.width));
+  const y1 = Math.min(img.height - 1 - step, Math.floor(rect.y + rect.height));
+  const lum = (x, y) => {
+    const i = (y * img.width + x) * img.channels;
+    return 0.2126 * img.px[i] + 0.7152 * img.px[i + 1] + 0.0722 * img.px[i + 2];
+  };
+  let s = 0;
+  let s2 = 0;
+  let g = 0;
+  let n = 0;
+  for (let y = y0; y < y1; y += step) {
+    for (let x = x0; x < x1; x += step) {
+      const l = lum(x, y);
+      s += l;
+      s2 += l * l;
+      g += Math.abs(lum(x + step, y) - l) + Math.abs(lum(x, y + step) - l);
+      n++;
+    }
+  }
+  if (!n) return { std: 0, step: 0 };
+  const mean = s / n;
+  return { std: Math.round(Math.sqrt(Math.max(0, s2 / n - mean * mean)) * 100) / 100, step: Math.round((g / n) * 100) / 100 };
+}
 
 /** Launches a headless browser with a throwaway profile; resolves to a connected Browser. */
 export async function launchBrowser({ executable = findBrowser(), extraArgs = [] } = {}) {

@@ -129,6 +129,58 @@ export function planPath(from, to, entry = []) {
   return waypoints;
 }
 
+// ---------------------------------------------------------------------------
+// Visiting friends (Iteration 4)
+// ---------------------------------------------------------------------------
+/** The easel spot mirrors the host's painting spot across the canvas normal (the visitor paints left-handed). */
+function mirrorAcrossEasel() {
+  const E = STATIONS.easel;
+  const yaw = E.canvasYaw;
+  const lx = { x: Math.cos(yaw), z: -Math.sin(yaw) };
+  const lz = { x: Math.sin(yaw), z: Math.cos(yaw) };
+  const board = { x: E.center.x + 0.14 * lz.x, z: E.center.z + 0.14 * lz.z };
+  const rx = E.anchor.x - board.x;
+  const rz = E.anchor.z - board.z;
+  const u = -(rx * lx.x + rz * lx.z) - 0.04;
+  const v = rx * lz.x + rz * lz.z + 0.03;
+  const r3 = (n) => Math.round(n * 1000) / 1000;
+  // Mirrored, then opened a little toward the room so its face shows while it paints.
+  const facing = Math.atan2(Math.sin(2 * yaw - E.facing - deg(15)), Math.cos(2 * yaw - E.facing - deg(15)));
+  return { x: r3(board.x + u * lx.x + v * lz.x), z: r3(board.z + u * lx.z + v * lz.z), facing: Math.round(facing * 1e4) / 1e4 };
+}
+
+/** Where a visiting friend stands: arrival, hanging out, and its spots for a jam and a co-draw. */
+export const VISIT_SPOTS = Object.freeze({
+  /** Visitors arrive at and leave from the open front-right corner of the diorama. */
+  door: Object.freeze({ x: 2.5, z: 2.45 }),
+  /** Open floor where a visitor hangs out between sessions (picked away from the host and out of the shot). */
+  hangout: Object.freeze([
+    Object.freeze({ x: 1.0, z: 2.3 }), Object.freeze({ x: 1.95, z: 1.9 }), Object.freeze({ x: -0.05, z: 2.4 }), Object.freeze({ x: 1.95, z: -0.55 }),
+  ]),
+  /** Behind its toy xylophone, to the right of the studio keyboard. */
+  jam: Object.freeze({ x: 2.35, z: -2.05, facing: deg(-30) }),
+  /** The other side of the easel from the host. */
+  codraw: Object.freeze(mirrorAcrossEasel()),
+});
+
+/** The visitor's toy xylophone stands just in front of its jam spot (only while a friend visits). */
+export const XYLOPHONE = Object.freeze({
+  x: Math.round((VISIT_SPOTS.jam.x + 0.42 * Math.sin(VISIT_SPOTS.jam.facing)) * 1000) / 1000,
+  z: Math.round((VISIT_SPOTS.jam.z + 0.42 * Math.cos(VISIT_SPOTS.jam.facing)) * 1000) / 1000,
+  yaw: VISIT_SPOTS.jam.facing,
+  /** Bars, low to high (the player's left to right). */
+  bars: Object.freeze([60, 62, 64, 67, 69, 72, 74, 76, 79, 81]),
+});
+
+/** The xylophone bar that plays a MIDI note (nearest pitch). */
+export function xylophoneBar(midi) {
+  let best = 0;
+  XYLOPHONE.bars.forEach((m, i) => {
+    if (Math.abs(m - midi) < Math.abs(XYLOPHONE.bars[best] - midi)) best = i;
+  });
+  return best;
+}
+
 /** Station whose anchor/approach is closest to `p` (used for idle bookkeeping). */
 export function nearestStation(p, maxDist = 0.6) {
   let best = null;
