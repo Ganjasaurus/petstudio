@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#fbe6dc">
+  <meta name="color-scheme" content="light">
+  <meta name="description" content="Pet Studio: a cozy 3D creative pet that makes little songs and drawings in its own miniature studio.">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Pet Studio">
+  <title>Pet Studio</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cellipse cx='32' cy='38' rx='22' ry='20' fill='%23ffb8c9'/%3E%3Ccircle cx='24' cy='36' r='3.5' fill='%232b2034'/%3E%3Ccircle cx='40' cy='36' r='3.5' fill='%232b2034'/%3E%3Cpath d='M27 45q5 4 10 0' stroke='%232b2034' stroke-width='3' fill='none' stroke-linecap='round'/%3E%3Cellipse cx='20' cy='14' rx='6' ry='11' fill='%23ffb8c9'/%3E%3Cellipse cx='44' cy='14' rx='6' ry='11' fill='%23ffb8c9'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <svg class="sprite" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg">
+    <symbol id="i-hunger" viewBox="0 0 24 24"><path d="M12 7.2c-1.6-1.3-5.2-1.6-6.5 1.3-1.5 3.3.5 8.8 3 10.5 1.3.9 2.3.4 3.5.4s2.2.5 3.5-.4c2.5-1.7 4.5-7.2 3-10.5-1.3-2.9-4.9-2.6-6.5-1.3z"/><path d="M12 7.2c0-2 .7-3.3 2.2-4.2"/></symbol>
+    <symbol id="i-energy" viewBox="0 0 24 24"><path d="M13.5 2.5 5.5 13.5h6l-1 8 8-11h-6l1-8z"/></symbol>
+    <symbol id="i-hygiene" viewBox="0 0 24 24"><path d="M12 3s6 6.4 6 11a6 6 0 0 1-12 0c0-4.6 6-11 6-11z"/><path d="M9.3 14.3a2.7 2.7 0 0 0 2.7 2.7"/></symbol>
+    <symbol id="i-mood" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M8.4 14.2c1.9 2.2 5.3 2.2 7.2 0"/><path d="M9 9.6h.01M15 9.6h.01"/></symbol>
+    <symbol id="i-curiosity" viewBox="0 0 24 24"><path d="M11 3.5l1.8 4.7 4.7 1.8-4.7 1.8L11 16.5l-1.8-4.7L4.5 10l4.7-1.8L11 3.5z"/><path d="M18 14.5l.8 2 2 .8-2 .8-.8 2-.8-2-2-.8 2-.8.8-2z"/></symbol>
+    <symbol id="i-bond" viewBox="0 0 24 24"><path d="M12 20s-7.6-4.5-7.6-10.2A4.3 4.3 0 0 1 12 7.3a4.3 4.3 0 0 1 7.6 2.5C19.6 15.5 12 20 12 20z"/></symbol>
+    <symbol id="i-feed" viewBox="0 0 24 24"><path d="M3.5 11.5h17a8.5 8.5 0 0 1-17 0z"/><path d="M8.5 8c0-1.2 1-1.5 1-2.7M12.5 8c0-1.2 1-1.5 1-2.7"/></symbol>
+    <symbol id="i-wash" viewBox="0 0 24 24"><circle cx="9" cy="14" r="5"/><circle cx="17" cy="7.5" r="3"/><circle cx="18.2" cy="16.2" r="1.8"/><path d="M6.9 12.3a2.5 2.5 0 0 1 2.1-1.3"/></symbol>
+    <symbol id="i-rest" viewBox="0 0 24 24"><path d="M19.5 14.6A8 8 0 1 1 9.4 4.5a6.5 6.5 0 0 0 10.1 10.1z"/></symbol>
+    <symbol id="i-wake" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2.6v2.2M12 19.2v2.2M4.6 4.6l1.6 1.6M17.8 17.8l1.6 1.6M2.6 12h2.2M19.2 12h2.2M4.6 19.4l1.6-1.6M17.8 6.2l1.6-1.6"/></symbol>
+    <symbol id="i-paw" viewBox="0 0 24 24"><g fill="currentColor" stroke="none"><ellipse cx="12" cy="15.6" rx="4.3" ry="3.7"/><circle cx="5.9" cy="10.4" r="2"/><circle cx="9.5" cy="6.4" r="2"/><circle cx="14.5" cy="6.4" r="2"/><circle cx="18.1" cy="10.4" r="2"/></g></symbol>
+    <symbol id="i-praise" viewBox="0 0 24 24"><path d="M12 3.2l2.6 5.4 6 .8-4.4 4.2 1.1 5.9L12 16.6l-5.3 2.9 1.1-5.9-4.4-4.2 6-.8L12 3.2z"/></symbol>
+    <symbol id="i-music" viewBox="0 0 24 24"><path d="M9 18V6.2l10-2.2v12"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="16.5" cy="16" r="2.5"/></symbol>
+    <symbol id="i-draw" viewBox="0 0 24 24"><path d="M18.3 2.8a2 2 0 0 1 2.9 2.9L11.2 15.7 8.3 12.8 18.3 2.8z"/><path d="M8.3 12.8c-2.3 0-4 1.6-4 4 0 1.5-.7 2.5-2 3 4.6.6 8.9-1 8.9-4.1"/></symbol>
+    <symbol id="i-customize" viewBox="0 0 24 24"><path d="M12 3a9 9 0 0 0 0 18c1.4 0 2-1 2-2s-.8-1.4-.8-2.4c0-1 .8-1.6 1.8-1.6H17a4 4 0 0 0 4-4c0-4.4-4-8-9-8z"/><circle cx="7.6" cy="11" r="1.1"/><circle cx="10.6" cy="7" r="1.1"/><circle cx="15.2" cy="7.6" r="1.1"/></symbol>
+    <symbol id="i-home" viewBox="0 0 24 24"><path d="M3.5 11 12 4l8.5 7"/><path d="M5.5 9.5V20h13V9.5"/><path d="M10 20v-5h4v5"/></symbol>
+    <symbol id="i-sleep" viewBox="0 0 24 24"><path d="M17 15.6A7 7 0 1 1 8.4 5a5.5 5.5 0 0 0 8.6 10.6z"/><path d="M15 3.5h4l-4 4h4"/></symbol>
+    <symbol id="i-sound" viewBox="0 0 24 24"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z"/><path d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11"/></symbol>
+    <symbol id="i-mute" viewBox="0 0 24 24"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z"/><path d="M16 9.5l5 5M21 9.5l-5 5"/></symbol>
+    <symbol id="i-more" viewBox="0 0 24 24"><g fill="currentColor" stroke="none"><circle cx="5.5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="18.5" cy="12" r="2"/></g></symbol>
+    <symbol id="i-teach" viewBox="0 0 24 24"><path d="M9 18h6M10 21h4"/><path d="M12 3a6 6 0 0 0-3.5 10.9c.6.5 1 1.2 1 2.1h5c0-.9.4-1.6 1-2.1A6 6 0 0 0 12 3z"/></symbol>
+    <symbol id="i-gallery" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="13" height="11" rx="1.6"/><path d="M7.5 19.5h11.5a1 1 0 0 0 1-1V8.5"/><path d="M6 13l3.1-3.1 2.8 2.8 1.6-1.6 1.9 1.9"/></symbol>
+    <symbol id="i-practice" viewBox="0 0 24 24"><path d="M15.6 16.2A6.6 6.6 0 1 1 8 6.6a5 5 0 0 0 7.6 9.6z"/><path d="M18 3.5l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7.7-1.8z"/></symbol>
+    <symbol id="i-inspector" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5 21 21"/><path d="M7.4 12.2l2-2.5 2 1.5 2-3"/></symbol>
+    <symbol id="i-walk" viewBox="0 0 24 24"><path d="M8 3.5c1.7 0 2.5 2 2.5 4.5S9.5 12 8 12s-2.5-1.5-2.5-4S6.3 3.5 8 3.5z"/><path d="M6 14.5h4v2a2 2 0 0 1-4 0z"/><path d="M16 7.5c1.7 0 2.5 2 2.5 4.5S17.5 16 16 16s-2.5-1.5-2.5-4S14.3 7.5 16 7.5z"/><path d="M14 18.5h4v.5a2 2 0 0 1-4 0z"/></symbol>
+    <symbol id="i-listen" viewBox="0 0 24 24"><path d="M4 15v-3a8 8 0 0 1 16 0v3"/><rect x="3" y="14" width="4.5" height="6.5" rx="1.5"/><rect x="16.5" y="14" width="4.5" height="6.5" rx="1.5"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></symbol>
+    <symbol id="i-dice" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="3.5"/><g fill="currentColor" stroke="none"><circle cx="9" cy="9" r="1.3"/><circle cx="15" cy="15" r="1.3"/><circle cx="15" cy="9" r="1.3"/><circle cx="9" cy="15" r="1.3"/></g></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></symbol>
+  </svg>
+
+  <div id="app">
+    <div id="stage">
+      <canvas id="scene" tabindex="-1" aria-label="The pet's 3D studio. Tap the pet to pet it, or tap a station to send it there. Drag to look around."></canvas>
+    </div>
+
+    <div class="top-overlay">
+      <header class="topbar">
+        <div class="tb-id glass">
+          <span id="pet-avatar" class="avatar" aria-hidden="true"></span>
+          <div class="tb-name">
+            <h1 id="pet-name" class="pet-name">Pet Studio</h1>
+            <ul id="badges" class="badges" aria-label="Personality"></ul>
+          </div>
+        </div>
+        <div id="status" class="status-pill glass" role="status" aria-live="polite">
+          <svg class="ico" aria-hidden="true"><use id="status-icon" href="#i-mood"></use></svg>
+          <span id="status-text" class="status-text">Waking up</span>
+          <span id="status-source" class="status-source"></span>
+        </div>
+        <div id="views" class="views glass" role="radiogroup" aria-label="Camera view"></div>
+        <div class="tb-actions">
+          <button id="btn-mute" class="icon-btn glass" type="button" aria-pressed="false" aria-label="Mute sound" title="Mute sound (M)">
+            <svg class="ico" aria-hidden="true"><use href="#i-sound"></use></svg>
+          </button>
+          <button id="btn-customize" class="pill-btn accent" type="button" aria-label="Customize Pet" title="Customize Pet (C)">
+            <svg class="ico" aria-hidden="true"><use href="#i-customize"></use></svg><span class="label">Customize Pet</span>
+          </button>
+        </div>
+      </header>
+      <section id="meters" class="meters glass" aria-label="Care and needs"></section>
+    </div>
+
+    <div id="toasts" class="toasts" aria-live="polite"></div>
+    <div id="hover-tip" class="hover-tip" hidden></div>
+
+    <nav id="dock" class="dock glass" aria-label="Actions">
+      <div class="dock-group" role="group" aria-label="Care">
+        <span class="dock-label" aria-hidden="true">Care</span>
+        <button class="act" type="button" data-action="feed" title="Feed (F)"><svg class="ico" aria-hidden="true"><use href="#i-feed"></use></svg><span class="lbl">Feed</span></button>
+        <button class="act" type="button" data-action="wash" title="Wash (W)"><svg class="ico" aria-hidden="true"><use href="#i-wash"></use></svg><span class="lbl">Wash</span></button>
+        <button class="act" type="button" data-action="rest" title="Rest (R)"><svg class="ico" aria-hidden="true"><use href="#i-rest"></use></svg><span class="lbl">Rest</span></button>
+        <button class="act" type="button" data-action="pet" title="Pet (P)"><svg class="ico" aria-hidden="true"><use href="#i-paw"></use></svg><span class="lbl">Pet</span></button>
+        <button class="act" type="button" data-action="praise" title="Praise (G)"><svg class="ico" aria-hidden="true"><use href="#i-praise"></use></svg><span class="lbl">Praise</span></button>
+      </div>
+      <div class="dock-group" role="group" aria-label="Studio">
+        <span class="dock-label" aria-hidden="true">Studio</span>
+        <button class="act" type="button" data-action="music" aria-label="Go Play Music" title="Go Play Music (J)"><svg class="ico" aria-hidden="true"><use href="#i-music"></use></svg><span class="lbl lbl-long">Go Play Music</span><span class="lbl lbl-short">Music</span></button>
+        <button class="act" type="button" data-action="draw" aria-label="Go Draw" title="Go Draw (D)"><svg class="ico" aria-hidden="true"><use href="#i-draw"></use></svg><span class="lbl lbl-long">Go Draw</span><span class="lbl lbl-short">Draw</span></button>
+        <button class="act" type="button" data-action="customize" title="Customize (C)"><svg class="ico" aria-hidden="true"><use href="#i-customize"></use></svg><span class="lbl">Customize</span></button>
+      </div>
+      <div class="dock-group dock-next" role="group" aria-label="Coming next">
+        <span class="dock-label" aria-hidden="true">Coming next</span>
+        <div id="next-buttons" class="next-buttons"></div>
+        <button class="act soon more-btn" type="button" data-action="next" aria-haspopup="dialog" title="Coming next"><svg class="ico" aria-hidden="true"><use href="#i-more"></use></svg><span class="lbl">More</span></button>
+      </div>
+    </nav>
+
+    <dialog id="customizer" class="sheet customizer" aria-labelledby="cz-title"></dialog>
+
+    <dialog id="next-sheet" class="sheet next-sheet" aria-labelledby="next-title">
+      <div class="sheet-head">
+        <div>
+          <h2 id="next-title">Coming to the studio</h2>
+          <p class="sheet-sub">These hooks are wired up and arrive in later iterations.</p>
+        </div>
+        <button class="icon-btn" type="button" data-close aria-label="Close"><svg class="ico" aria-hidden="true"><use href="#i-close"></use></svg></button>
+      </div>
+      <ul id="next-list" class="next-list"></ul>
+      <p class="sheet-note">Everything you see today is hand-authored game logic: needs, temperament and the starter songs and drawings. Genuine on-device learning arrives with Teaching and Sleep Practice, and will be clearly labelled.</p>
+    </dialog>
+
+    <div id="gl-error" class="gl-error glass" hidden role="alert">
+      <h2>3D view unavailable</h2>
+      <p>This browser could not start WebGL, so the studio cannot be drawn. Your pet still lives here: the care buttons and meters keep working.</p>
+    </div>
+
+    <div id="splash" class="splash" aria-hidden="true">
+      <div class="splash-blob"><i></i><i></i></div>
+      <p>Setting up the studio…</p>
+    </div>
+    <noscript><p class="noscript">Pet Studio needs JavaScript to run.</p></noscript>
+  </div>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
