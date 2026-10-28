@@ -48,7 +48,8 @@ import { VISIT_SPOTS } from './studio-layout.js';
 const BUILD = typeof __PETSTUDIO_BUILD__ !== 'undefined' ? __PETSTUDIO_BUILD__ : { version: 'dev', mode: 'unbundled', builtAt: null };
 const params = new URLSearchParams(window.location.search);
 const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
-const coarsePointer = window.matchMedia?.('(pointer: coarse)').matches ?? false;
+const isXbox = /Xbox/i.test(navigator.userAgent || '');
+const coarsePointer = isXbox || (window.matchMedia?.('(pointer: coarse)').matches ?? false);
 const WORKSHOP_DRAFT_KEY = 'petstudio.workshop.v1';
 
 const REACTION_ICON = {
@@ -187,7 +188,7 @@ class App {
     this.ready = false;
     this.last = 0;
     this.prevView = 'overview';
-    this.perf = { acc: 0, frames: 0, fps: 0, dpr: Math.min(window.devicePixelRatio || 1, 2) };
+    this.perf = { acc: 0, frames: 0, fps: 0, dpr: isXbox ? 1 : Math.min(window.devicePixelRatio || 1, 2) };
     this.tmp = { head: new THREE.Vector3(), pen: new THREE.Vector3(), focus: new THREE.Vector3() };
     this.vm = { position: null, heading: 0, elevation: 0, activity: 'idle', walkSpeed: 1, expression: 'neutral', bubble: null };
     this.ctx = { cameraPosition: null, penTarget: null, keyTargets: null, beat: null, listenBeat: null, paintColor: null, lookAt: null };

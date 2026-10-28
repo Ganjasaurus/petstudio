@@ -1153,7 +1153,12 @@ export class StudioScene {
     this.canvas = canvas;
     this.reducedMotion = reducedMotion;
     this.lowPower = lowPower;
-    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true, powerPreference: 'high-performance' });
+    let renderer;
+    try {
+      renderer = new THREE.WebGLRenderer({ canvas, antialias: !lowPower, alpha: true, powerPreference: 'high-performance' });
+    } catch {
+      renderer = new THREE.WebGLRenderer({ canvas, antialias: false, alpha: true });
+    }
     renderer.setClearColor(0x000000, 0);
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.NeutralToneMapping;
