@@ -34,6 +34,7 @@ const options = {
   format: 'esm',
   target: 'es2022',
   platform: 'browser',
+  plugins: [{ name: 'three-r162', setup(b) { b.onResolve({ filter: /^three$/ }, () => ({ path: path.join(root, 'vendor/three-r162.module.min.js') })); } }],
   minify: !dev,
   sourcemap: dev ? 'inline' : 'linked',
   legalComments: 'eof', // keeps the three.js MIT licence notice in the bundle
@@ -70,7 +71,7 @@ await mkdir(distDir, { recursive: true });
 if (watchMode) {
   const ctx = await esbuild.context({
     ...options,
-    plugins: [{
+    plugins: [...(options.plugins ?? []), {
       name: 'report',
       setup(build) {
         let started = Date.now();
