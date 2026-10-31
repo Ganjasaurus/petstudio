@@ -83,6 +83,24 @@ function canvasTexture(w, h, paint, { repeat = null, srgb = true } = {}) {
   return tex;
 }
 
+/** A soft dark disc on the floor (one draw): the console tier's stand-in for a pet's real-time shadow. */
+function contactBlob() {
+  const tex = canvasTexture(128, 128, (ctx, S) => {
+    const g = ctx.createRadialGradient(S / 2, S / 2, 0, S / 2, S / 2, S / 2);
+    g.addColorStop(0, 'rgba(92, 52, 44, 0.42)');
+    g.addColorStop(0.55, 'rgba(92, 52, 44, 0.24)');
+    g.addColorStop(1, 'rgba(92, 52, 44, 0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, S, S);
+  });
+  const blob = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false }));
+  blob.rotation.x = -Math.PI / 2;
+  blob.renderOrder = 4;
+  blob.raycast = () => {};
+  blob.visible = false;
+  return blob;
+}
+
 function seeded(seed) {
   let s = seed >>> 0 || 1;
   return () => (s = (s * 16807) % 2147483647) / 2147483647;
@@ -1147,12 +1165,14 @@ const HOVER_RADIUS = { food: 0.78, bath: 1.0, bed: 1.0, music: 1.0, easel: 0.85,
 export class StudioScene {
   /**
    * @param {HTMLCanvasElement} canvas
-   * @param {{reducedMotion?: boolean, lowPower?: boolean}} [opts]
+   * @param {{reducedMotion?: boolean, lowPower?: boolean, consoleTier?: boolean}} [opts]
+   *   `consoleTier` (Xbox One): no shadow map and no point light; soft contact blobs keep the pets on the floor.
    */
-  constructor(canvas, { reducedMotion = false, lowPower = false } = {}) {
+  constructor(canvas, { reducedMotion = false, lowPower = false, consoleTier = false } = {}) {
     this.canvas = canvas;
     this.reducedMotion = reducedMotion;
     this.lowPower = lowPower;
+    this.consoleTier = consoleTier;
     let renderer;
     try {
       renderer = new THREE.WebGLRenderer({ canvas, antialias: !lowPower, alpha: true, powerPreference: 'high-performance' });
@@ -1163,7 +1183,7 @@ export class StudioScene {
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.NeutralToneMapping;
     renderer.toneMappingExposure = 1.0;
-    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.enabled = !consoleTier;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer = renderer;
     this.scene = new THREE.Scene();
@@ -1217,6 +1237,8 @@ export class StudioScene {
     this.rig = new CameraRig(this.camera, canvas, { reducedMotion });
     this.rig.onTap = (x, y) => this.onPick?.(this.pick(x, y), { x, y });
     this.rig.onHover = (x, y) => this._hover(x, y);
+    this.blobs = consoleTier ? [contactBlob(), contactBlob()] : [];
+    for (const b of this.blobs) this.scene.add(b);
     this.raycaster = new THREE.Raycaster();
     this.timers = { zzz: 0, bubble: 0, crumb: 0, dream: 0 };
     this.dreamSeq = 0;
@@ -1233,7 +1255,7 @@ export class StudioScene {
     this.hemi = new THREE.HemisphereLight(0xfff3e6, 0xe2c2a8, 1.55);
     const key = new THREE.DirectionalLight(0xfff0dc, 2.5);
     key.position.set(-4.5, 9.5, 6);
-    key.castShadow = true;
+    key.castShadow = !this.consoleTier;
     const size = this.lowPower ? 1024 : 2048;
     key.shadow.mapSize.set(size, size);
     Object.assign(key.shadow.camera, { left: -6, right: 6, top: 6, bottom: -6, near: 1, far: 30 });
@@ -1244,7 +1266,8 @@ export class StudioScene {
     fill.position.set(6, 4, -1);
     this.windowGlow = new THREE.PointLight(0xfff1d6, 1.2, 5, 1.5);
     this.windowGlow.position.set(-0.6, 1.7, -ROOM.half + 0.6);
-    this.scene.add(this.hemi, key, key.target, fill, this.windowGlow);
+    this.scene.add(this.hemi, key, key.target, fill);
+    if (!this.consoleTier) this.scene.add(this.windowGlow); // a point light costs the console's GPU too much
   }
 
   /** Adds the pet model to the studio (it becomes pickable). */
@@ -1512,6 +1535,18 @@ export class StudioScene {
     }
     ring.material.opacity = damp(ring.material.opacity, target, 12, dt);
     ring.visible = ring.material.opacity > 0.01;
+
+    // Console tier: contact blobs follow the pets on the floor and fade as they hop up (into the tub, onto the bed).
+    [this.pet, this.visitor].forEach((m, i) => {
+      const blob = this.blobs[i];
+      if (!blob) return;
+      const root = m?.root;
+      blob.visible = !!root?.parent;
+      if (!blob.visible) return;
+      blob.position.set(root.position.x, 0.03, root.position.z);
+      blob.scale.setScalar(0.9 * root.scale.x);
+      blob.material.opacity = clamp(1 - root.position.y / 0.45, 0, 1);
+    });
 
     this.rig.update(dt, frame.petFocus);
   }

@@ -43,12 +43,14 @@ import { SocialStudio, loadFriends, saveFriends, clearFriends, FRIENDS_VERSION, 
 import { createSnapshot, parseSnapshot, serializeSnapshot, snapshotFileName, snapshotSummary, BUILTIN_IDS, SNAPSHOT_FORMAT } from './pet-snapshot.js';
 import { installVisitSheet } from './visit-sheet.js';
 import { VISIT_SPOTS } from './studio-layout.js';
+import { isConsole } from './console-kit.js';
+import { installConsolePad } from './console-pad.js';
 
 /* global __PETSTUDIO_BUILD__ */
 const BUILD = typeof __PETSTUDIO_BUILD__ !== 'undefined' ? __PETSTUDIO_BUILD__ : { version: 'dev', mode: 'unbundled', builtAt: null };
 const params = new URLSearchParams(window.location.search);
 const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
-const isXbox = /Xbox/i.test(navigator.userAgent || '');
+const isXbox = isConsole(); // Edge on the Xbox One sends a plain Windows user agent: the kit spots it by its GPU
 const coarsePointer = isXbox || (window.matchMedia?.('(pointer: coarse)').matches ?? false);
 const WORKSHOP_DRAFT_KEY = 'petstudio.workshop.v1';
 
@@ -277,7 +279,7 @@ class App {
     });
 
     try {
-      this.studio = new StudioScene(document.getElementById('scene'), { reducedMotion, lowPower: coarsePointer });
+      this.studio = new StudioScene(document.getElementById('scene'), { reducedMotion, lowPower: coarsePointer, consoleTier: isXbox });
       this.model = new PetModel(this.pet.appearance, { reducedMotion });
       this.studio.setPet(this.model);
       this.studio.onPick = (hit) => this.onPick(hit);
@@ -2024,3 +2026,4 @@ class App {
 
 const app = new App();
 app.boot();
+installConsolePad(app);
