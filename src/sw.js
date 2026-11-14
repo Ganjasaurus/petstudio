@@ -7,7 +7,7 @@
  * to the cached app shell. The app never needs the network after its first
  * visit: no fonts, models, textures or sounds are downloaded.
  */
-const CACHE = 'petstudio-shell-v1';
+const CACHE = 'petstudio-shell-v2';
 const SHELL = [
   './', 'index.html', 'app.js', 'styles.css', 'manifest.webmanifest', 'icon.svg',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/icon-maskable-512.png', 'icons/apple-touch-icon.png',

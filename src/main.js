@@ -1098,7 +1098,7 @@ class App {
         document.body.append(a);
         a.click();
         a.remove();
-        setTimeout(() => URL.revokeObjectURL(url), 4000);
+        setTimeout(() => URL.revokeObjectURL(url), 60000);
       } catch {
         return { ok: false, reason: 'download-failed', message: 'This browser blocked the download. Try Copy instead.' };
       }

@@ -178,7 +178,7 @@ export class VisitSheet {
             <button type="button" class="btn" data-vs="import">${useIcon('i-upload')}<span>Import File</span></button>
             <button type="button" class="btn" data-vs="paste-toggle" aria-expanded="false" aria-controls="vs-paste">${useIcon('i-paste')}<span>Paste</span></button>
           </div>
-          <input type="file" accept=".json,application/json" data-vs-file hidden>
+          <input type="file" data-vs-file hidden>
           <div class="vs-paste" id="vs-paste" hidden>
             <label class="vs-paste-label" for="vs-paste-text">Paste a friend's snapshot (petstudio.snapshot.v1)</label>
             <textarea id="vs-paste-text" data-vs-paste rows="3" spellcheck="false" autocomplete="off"></textarea>
