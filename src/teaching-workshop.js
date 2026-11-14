@@ -22,6 +22,14 @@ import {
   PHRASE_LIMITS, sanitizePhrase, sanitizeDrawing, phraseIsEmpty, strokeLength, PAPER, KEY_RANGE,
 } from './teaching-core.js';
 import { paintDrawing, paintGuide, paintPhraseRoll, phraseRollLayout, fitCanvas, pressureWidth } from './creation-render.js';
+import {
+  DRAWING_SEND_TARGETS,
+  MELODY_SEND_TARGETS,
+  downloadDrawingPng,
+  downloadPhraseWav,
+  sendDrawingToApp,
+  sendPhraseToApp,
+} from './exporters.js';
 
 const DRAFT_KEY = 'petstudio.workshop.v1';
 const DRAFT_SCHEMA = 'petstudio.workshop';
@@ -59,6 +67,9 @@ export class TeachingWorkshop {
     this.brush = { id: 'medium', color: DRAW_COLORS[1], width: BRUSH_SIZES[1].width };
     this.mode = 'stamp';
     this.traceId = null;
+    this.traceImage = null;
+    this.traceImageLabel = '';
+    this.sendOpen = false;
     this.templateId = { music: null, drawing: null };
     this.stamps = []; // { id, before }: stamps still present in the drawing (for the lesson's template name)
     this.transport = null;
@@ -160,13 +171,17 @@ export class TeachingWorkshop {
         <p class="ws-note">Each lesson goes into your pet's teaching memory, and its first attempts riff on it with hand-written rules. In Sleep Practice its two small neural networks train on your lessons, so later attempts can move closer to what you taught.</p>
       </div>
       <div class="ws-foot">
+        <div class="ws-send-bar" data-ws-sendbar hidden role="group" aria-label="Send creation to another app"></div>
         <p class="ws-note-compact">Kept in teaching memory · Sleep Practice trains on it</p>
         <p class="ws-hint" aria-live="polite"></p>
+        <button type="button" class="icon-btn ws-foot-btn" data-ws="export" aria-label="Download WAV" title="Download WAV">${useIcon('i-download')}</button>
+        <button type="button" class="icon-btn ws-foot-btn" data-ws="send-toggle" aria-expanded="false" aria-label="Send to another app" title="Send to another app">${useIcon('i-send')}</button>
         <button type="button" class="btn primary ws-teach" data-ws="teach">${useIcon('i-teach')}<span>Teach Pet</span></button>
       </div>`;
     const q = (s) => this.dialog.querySelector(s);
     this.el = {
       name: q('[data-ws-name]'), title: q('#ws-title'), body: q('.ws-body'), hint: q('.ws-hint'), teach: q('[data-ws="teach"]'),
+      exportBtn: q('[data-ws="export"]'), sendToggle: q('[data-ws="send-toggle"]'), sendBar: q('[data-ws-sendbar]'),
       timeline: q('.ws-timeline'), count: q('.ws-count'), keys: q('.ws-keys'), record: q('[data-ws="record"]'),
       preview: q('[data-ws="preview"]'), tempo: q('[data-ws="tempo"]'), tempoOut: q('[data-ws-out="tempo"]'),
       chromatic: q('[data-ws="chromatic"]'), canvas: q('.ws-canvas'), canvasWrap: q('.ws-canvas-wrap'), replay: q('[data-ws="replay"]'),
@@ -196,6 +211,7 @@ export class TeachingWorkshop {
       else if (b.dataset.color) this.setBrush({ color: b.dataset.color });
       else if (b.dataset.brush) this.setBrush({ id: b.dataset.brush });
       else if (b.dataset.beats) this.setBeats(Number(b.dataset.beats));
+      else if (b.dataset.sendTo) this._sendCurrentTo(b.dataset.sendTo, b.dataset.sendRole || '', b.textContent.trim());
       else if (b.dataset.ws) this._command(b.dataset.ws);
     });
     d.querySelector('.ws-tabs').addEventListener('keydown', (e) => {
@@ -245,8 +261,61 @@ export class TeachingWorkshop {
         this._afterDrawEdit();
         break;
       case 'replay': this.toggleReplay(); break;
+      case 'export': this._exportCurrent(); break;
+      case 'send-toggle':
+        this.sendOpen = !this.sendOpen;
+        this._sync();
+        break;
       default: break;
     }
+  }
+
+  _exportCurrent() {
+    if (this.tab === 'music') {
+      const phrase = this.music.snapshot();
+      if (phraseIsEmpty(phrase)) {
+        this.setHint('Play a few notes first, or pick a starter tune.');
+        return;
+      }
+      const title = musicTemplate(this.templateId.music)?.name || `${this.petName()}-melody`;
+      downloadPhraseWav(phrase, title)
+        .then(({ filename }) => this.setHint(`Saved ${filename}.`))
+        .catch(() => this.setHint('Could not export WAV right now.'));
+    } else {
+      const drawing = this.drawing.drawing;
+      if (!drawing.strokes.length) {
+        this.setHint('Draw something first, or stamp a shape.');
+        return;
+      }
+      const title = drawingTemplate(this.templateId.drawing)?.name || `${this.petName()}-drawing`;
+      downloadDrawingPng(drawing, title)
+        .then(({ filename }) => this.setHint(`Saved ${filename}.`))
+        .catch(() => this.setHint('Could not export PNG right now.'));
+    }
+  }
+
+  _sendCurrentTo(targetAppId, role = '', label = '') {
+    if (this.tab === 'music') {
+      const phrase = this.music.snapshot();
+      if (phraseIsEmpty(phrase)) {
+        this.setHint('Play a few notes first, or pick a starter tune.');
+        return;
+      }
+      const title = musicTemplate(this.templateId.music)?.name || `${this.petName()} Melody`;
+      this.setHint(`Opening ${label || targetAppId}…`);
+      void sendPhraseToApp(phrase, title, targetAppId, { onStatus: (msg) => this.setHint(msg) });
+    } else {
+      const drawing = this.drawing.drawing;
+      if (!drawing.strokes.length) {
+        this.setHint('Draw something first, or stamp a shape.');
+        return;
+      }
+      const title = drawingTemplate(this.templateId.drawing)?.name || `${this.petName()} Drawing`;
+      this.setHint(`Opening ${label || targetAppId}…`);
+      void sendDrawingToApp(drawing, title, targetAppId, { role, onStatus: (msg) => this.setHint(msg) });
+    }
+    this.sendOpen = false;
+    this._sync();
   }
 
   // ----- open / close ------------------------------------------------------------
@@ -266,6 +335,7 @@ export class TeachingWorkshop {
     if (!this.dialog.open) return;
     this.stopTransport();
     this.replay = null;
+    this.sendOpen = false;
     this.drawing.cancel();
     for (const [, h] of this.held) if (h.handle) this.music.noteOff(h.handle, nowS());
     this.held.clear();
@@ -281,6 +351,7 @@ export class TeachingWorkshop {
     if (tab !== this.tab) {
       this.stopTransport();
       this.replay = null;
+      this.sendOpen = false;
     }
     this.tab = tab;
     for (const b of this.dialog.querySelectorAll('[role="tab"]')) {
@@ -788,9 +859,41 @@ export class TeachingWorkshop {
     ctx.stroke();
   }
 
+  /** Sets an imported bitmap image as a faint trace reference on the drawing canvas. */
+  setTraceImage(img, label = '') {
+    this.traceImage = img || null;
+    this.traceImageLabel = String(label || '');
+    if (this.traceImage) {
+      this.mode = 'trace';
+      if (this.isOpen && this.tab === 'drawing') {
+        this._renderCanvas();
+        this._sync();
+        this.setHint(`Tracing reference ready${this.traceImageLabel ? `: "${this.traceImageLabel}"` : ''}.`);
+      }
+    } else if (this.isOpen && this.tab === 'drawing') {
+      this._renderCanvas();
+      this._sync();
+    }
+  }
+
   _renderCanvas(progress = 1) {
     const { ctx, size } = this._canvasCtx();
     paintDrawing(ctx, { paper: PAPER, strokes: [] }, size);
+    if (this.traceImage && this.mode === 'trace') {
+      const iw = this.traceImage.naturalWidth || this.traceImage.videoWidth || this.traceImage.width || size;
+      const ih = this.traceImage.naturalHeight || this.traceImage.videoHeight || this.traceImage.height || size;
+      if (iw > 0 && ih > 0) {
+        const pad = size * 0.06;
+        const avail = size - pad * 2;
+        const scale = Math.min(avail / iw, avail / ih);
+        const dw = iw * scale;
+        const dh = ih * scale;
+        ctx.save();
+        ctx.globalAlpha = 0.34;
+        ctx.drawImage(this.traceImage, (size - dw) / 2, (size - dh) / 2, dw, dh);
+        ctx.restore();
+      }
+    }
     if (this.traceId && this.mode === 'trace') paintGuide(ctx, drawingTemplate(this.traceId), size);
     paintDrawing(ctx, this.drawing.drawing, size, { progress, paper: false });
   }
@@ -888,8 +991,27 @@ export class TeachingWorkshop {
     this.el.replay.disabled = this.drawing.isEmpty;
     this.el.replay.setAttribute('aria-pressed', String(!!this.replay));
     const empty = this.tab === 'music' ? music.isEmpty : this.drawing.isEmpty;
+    if (empty && this.sendOpen) this.sendOpen = false;
     this.el.teach.classList.toggle('ready', !empty);
     this.el.teach.setAttribute('aria-disabled', String(empty));
+    const exportLabel = this.tab === 'music' ? 'Download WAV' : 'Download PNG';
+    this.el.exportBtn.disabled = empty;
+    this.el.exportBtn.setAttribute('aria-label', exportLabel);
+    this.el.exportBtn.title = exportLabel;
+    this.el.sendToggle.disabled = empty;
+    this.el.sendToggle.setAttribute('aria-expanded', String(this.sendOpen));
+    d.dataset.sendOpen = String(this.sendOpen);
+    this.el.sendBar.hidden = !this.sendOpen;
+    if (this.sendOpen) {
+      const targets = this.tab === 'music' ? MELODY_SEND_TARGETS : DRAWING_SEND_TARGETS;
+      const barKey = `${this.tab}:${targets.length}`;
+      if (this.el.sendBar.dataset.key !== barKey) {
+        this.el.sendBar.dataset.key = barKey;
+        this.el.sendBar.innerHTML = targets
+          .map((t) => `<button type="button" class="rf-chip-btn" data-send-to="${t.to}" data-send-role="${t.role}">${t.label}</button>`)
+          .join('');
+      }
+    }
     if (!this.hintUntil || nowS() > this.hintUntil) this.el.hint.textContent = this._defaultHint();
   }
 

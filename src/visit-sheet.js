@@ -12,6 +12,7 @@
  */
 import { TRAIT_LABELS, topTraitsOf } from './pet-state.js';
 import { snapshotSummary } from './pet-snapshot.js';
+import { downloadPetGlb, sendPetGlbToApp } from './exporters.js';
 
 const useIcon = (id) => `<svg class="ico" aria-hidden="true"><use href="#${id}"></use></svg>`;
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
@@ -166,6 +167,13 @@ export class VisitSheet {
             <button type="button" class="btn" data-vs="export">${useIcon('i-download')}<span>Download Snapshot</span></button>
             <button type="button" class="btn" data-vs="copy">${useIcon('i-copy')}<span>Copy</span></button>
           </div>
+          <div class="vs-row vs-row-single">
+            <button type="button" class="btn" data-vs="export-glb">${useIcon('i-download')}<span>Save 3D Pet (.glb)</span></button>
+          </div>
+          <div class="vs-row">
+            <button type="button" class="btn" data-vs="send-masque" title="Send 3D avatar to MASQUE">${useIcon('i-send')}<span>Send to MASQUE</span></button>
+            <button type="button" class="btn" data-vs="send-soulcode" title="Send 3D prop to Soulcode">${useIcon('i-send')}<span>Send to Soulcode</span></button>
+          </div>
           <div class="vs-row">
             <button type="button" class="btn" data-vs="import">${useIcon('i-upload')}<span>Import File</span></button>
             <button type="button" class="btn" data-vs="paste-toggle" aria-expanded="false" aria-controls="vs-paste">${useIcon('i-paste')}<span>Paste</span></button>
@@ -246,6 +254,38 @@ export class VisitSheet {
       case 'export':
         res = app.exportSnapshot({ download: true });
         this.say(res.ok ? { tone: 'good', text: `Saved ${res.fileName} (${kb(res.bytes)}): look, temperament, style, learned weights and up to two of its own songs and drawings.` } : { tone: 'warn', text: res.message });
+        break;
+      case 'export-glb':
+        if (!app.model) {
+          this.say({ tone: 'warn', text: '3D pet model is unavailable right now.' });
+          break;
+        }
+        this.say({ tone: 'good', text: `Exporting ${app.pet.name}'s 3D model (.glb)…` });
+        downloadPetGlb(app.model, app.pet.name)
+          .then(({ filename, bytes }) => this.say({ tone: 'good', text: `Saved ${filename} (${kb(bytes)}) with ${app.pet.name}'s live face and colours.` }))
+          .catch(() => this.say({ tone: 'warn', text: '3D GLB export failed right now.' }));
+        break;
+      case 'send-masque':
+        if (!app.model) {
+          this.say({ tone: 'warn', text: '3D pet model is unavailable right now.' });
+          break;
+        }
+        this.say({ tone: 'good', text: `Sending ${app.pet.name} to MASQUE…` });
+        void sendPetGlbToApp(app.model, app.pet.name, 'masque', {
+          role: 'avatar',
+          onStatus: (text) => this.say({ tone: 'good', text }),
+        });
+        break;
+      case 'send-soulcode':
+        if (!app.model) {
+          this.say({ tone: 'warn', text: '3D pet model is unavailable right now.' });
+          break;
+        }
+        this.say({ tone: 'good', text: `Sending ${app.pet.name} to Soulcode…` });
+        void sendPetGlbToApp(app.model, app.pet.name, 'soulcode', {
+          role: 'prop',
+          onStatus: (text) => this.say({ tone: 'good', text }),
+        });
         break;
       case 'copy':
         res = app.copySnapshot();

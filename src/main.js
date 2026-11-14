@@ -24,7 +24,7 @@ import { StudioScene, CAMERA_VIEWS } from './studio-scene.js';
 import { PetModel } from './pet-model.js';
 import { generateStarterPhrase } from './starter-repertoire.js';
 import { createRng } from './rng.js';
-import { StudioAudio } from './audio.js';
+import { StudioAudio, renderPhraseToWav } from './audio.js';
 import { Hud } from './hud.js';
 import { Customizer } from './customizer.js';
 import { noteColor, drumByMidi } from './teaching-core.js';
@@ -45,10 +45,13 @@ import { installVisitSheet } from './visit-sheet.js';
 import { VISIT_SPOTS } from './studio-layout.js';
 import { isConsole } from './console-kit.js';
 import { installConsolePad } from './console-pad.js';
+import { installRfImportReceiver } from './rf-bridge.js';
+import { renderDrawingToPng, exportPetToGlb } from './exporters.js';
 
 /* global __PETSTUDIO_BUILD__ */
 const BUILD = typeof __PETSTUDIO_BUILD__ !== 'undefined' ? __PETSTUDIO_BUILD__ : { version: 'dev', mode: 'unbundled', builtAt: null };
 const params = new URLSearchParams(window.location.search);
+const hasRfBoot = params.has('rf_import') || params.has('rf_inbox') || params.has('rf_token') || window.location.hash.includes('rf_b64=');
 const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
 const isXbox = isConsole(); // Edge on the Xbox One sends a plain Windows user agent: the kit spots it by its GPU
 const coarsePointer = isXbox || (window.matchMedia?.('(pointer: coarse)').matches ?? false);
@@ -201,6 +204,8 @@ class App {
     this.visitorGlance = { timer: 0, atHost: true };
     this.autonomyHolds = new Set();
     this.friendsDirty = false;
+    this.customWallImage = null;
+    this.importedAudio = null;
     this.tmpV = { head: new THREE.Vector3(), pen: new THREE.Vector3(), focus: new THREE.Vector3(), hostHead: new THREE.Vector3() };
   }
 
@@ -328,10 +333,15 @@ class App {
     if (this.memoryOnly) this.hud.toast('This browser blocks storage, so progress will not be saved.', { tone: 'warn', duration: 5000 });
     if (loaded.away) this.hud.toast(loaded.away.text, { icon: 'i-wake', duration: 5200 });
 
-    if (firstRun && !params.has('skipIntro')) this.openCustomizer({ firstRun: true });
+    if (firstRun && !params.has('skipIntro') && !hasRfBoot) this.openCustomizer({ firstRun: true });
     else this.save();
 
     this.exposeApi();
+    installRfImportReceiver({
+      appId: 'petstudio',
+      accepts: ['image', 'audio', 'json'],
+      onImport: (item) => this.handleIncomingAsset(item),
+    });
     requestAnimationFrame((t) => {
       this.last = t;
       this.frame(t);
@@ -563,8 +573,125 @@ class App {
   toggleMute() {
     this.audio.unlock();
     const muted = this.audio.toggleMute();
+    if (this.importedAudio?.el) this.importedAudio.el.volume = muted ? 0 : 0.85;
     this.hud.setMuted(muted);
     this.hud.toast(muted ? 'Sound off' : 'Sound on', { icon: muted ? 'i-mute' : 'i-sound', duration: 1600 });
+  }
+
+  stopImportedAudio() {
+    const cur = this.importedAudio;
+    if (!cur) return;
+    this.importedAudio = null;
+    try { cur.el.pause(); } catch {}
+    if (cur.timer) clearInterval(cur.timer);
+    if (cur.url) URL.revokeObjectURL(cur.url);
+  }
+
+  async handleIncomingAsset(item) {
+    if (!item) return { ok: false, reason: 'empty' };
+    const file = item.file || (typeof File !== 'undefined' && item instanceof File ? item : null);
+    const blob = item.blob || file || (item.bytes ? new Blob([item.bytes], { type: item.mime || 'application/octet-stream' }) : null);
+    if (!blob) return { ok: false, reason: 'no-blob' };
+    const name = String(item.name || file?.name || 'imported').trim();
+    const mime = String(item.mime || file?.type || '').toLowerCase();
+    let kind = String(item.kind || '').toLowerCase();
+    if (!kind) {
+      if (mime === 'application/json' || /\.json$/i.test(name)) kind = 'json';
+      else if (mime.startsWith('image/') || /\.(png|jpe?g|webp|gif|bmp|svg)$/i.test(name)) kind = 'image';
+      else if (mime.startsWith('audio/') || /\.(wav|mp3|ogg|m4a|flac|aac|webm)$/i.test(name)) kind = 'audio';
+    }
+
+    if (kind === 'json') {
+      let text = '';
+      try {
+        text = await blob.text();
+      } catch {
+        this.hud?.toast('That JSON file could not be read.', { tone: 'warn' });
+        return { ok: false, kind: 'json', reason: 'read-failed' };
+      }
+      const res = this.importSnapshot(text);
+      if (res.ok) {
+        if (this.customizer?.isOpen) this.customizer.close(false);
+        if (this.visitView?.isOpen) this.visitView._imported(res);
+        if (!this.social.session && !this.social.visitor) this.inviteFriend(res.friendId);
+        this.hud?.toast(`Imported friend snapshot "${res.name}"!`, { icon: 'i-visit', duration: 4000 });
+        return { ok: true, kind: 'json', friendId: res.friendId, name: res.name };
+      }
+      this.hud?.toast(res.message ?? 'That JSON file is not a Pet Studio snapshot.', { tone: 'warn', icon: 'i-visit' });
+      return { ok: false, kind: 'json', reason: res.reason };
+    }
+
+    if (kind === 'image') {
+      let img;
+      try {
+        img = await new Promise((resolve, reject) => {
+          const url = URL.createObjectURL(blob);
+          const el = new Image();
+          el.onload = () => {
+            URL.revokeObjectURL(url);
+            resolve(el);
+          };
+          el.onerror = (err) => {
+            URL.revokeObjectURL(url);
+            reject(err);
+          };
+          el.src = url;
+        });
+      } catch {
+        this.hud?.toast('Could not load that image.', { tone: 'warn', icon: 'i-frame' });
+        return { ok: false, kind: 'image', reason: 'decode-failed' };
+      }
+      const title = String(item.meta?.title || name.replace(/\.[^.]+$/, '') || 'Framed Picture').slice(0, 48);
+      if (this.customizer?.isOpen) this.customizer.close(false);
+      this.customWallImage = { img, title };
+      if (this.gallery.wall) {
+        this.gallery.unpin();
+        this.saveStores();
+      }
+      this.studio?.setWallImage(img, { title, pinned: true });
+      this.workshop?.setTraceImage(img, title);
+      if (!(this.workshop?.isOpen && this.workshop.tab === 'drawing') && !this.galleryView?.isOpen && !this.inspector?.isOpen) {
+        this.setView('wall', { auto: true });
+      }
+      this.audio.sfx('hang');
+      this.hud?.toast(`Framed "${title}" on the studio wall!`, { icon: 'i-frame', duration: 4200 });
+      return { ok: true, kind: 'image', title };
+    }
+
+    if (kind === 'audio') {
+      this.stopImportedAudio();
+      const title = String(item.meta?.title || name.replace(/\.[^.]+$/, '') || 'Imported Tune').slice(0, 48);
+      if (this.customizer?.isOpen) this.customizer.close(false);
+      if (!this.pet.isAsleep && !this.social.session) this.action('listen');
+      const url = URL.createObjectURL(blob);
+      const el = new Audio(url);
+      el.volume = this.audio.muted ? 0 : 0.85;
+      const timer = setInterval(() => {
+        if (!el.paused && !el.ended) this.studio?.speakerNote('#8f7cf0');
+      }, 550);
+      const record = { el, url, timer, title };
+      this.importedAudio = record;
+      el.addEventListener('ended', () => {
+        if (this.importedAudio === record) this.stopImportedAudio();
+      }, { once: true });
+      el.play().then(() => {
+        this.hud?.toast(`Jamming to "${title}" in the Music Corner!`, { icon: 'i-music', duration: 4200 });
+      }).catch(() => {
+        this.hud?.toast(`Loaded "${title}" — tap anywhere to hear it play!`, { icon: 'i-music', duration: 4500 });
+        const resume = () => {
+          if (this.importedAudio === record) {
+            el.volume = this.audio.muted ? 0 : 0.85;
+            el.play().catch(() => {});
+          }
+        };
+        window.addEventListener('pointerup', resume, { once: true, passive: true });
+        window.addEventListener('keydown', resume, { once: true });
+      });
+      return { ok: true, kind: 'audio', title };
+    }
+
+    this.hud?.toast('Drop a .png/.jpg image, .wav/.mp3 audio, or .json pet snapshot.', { tone: 'warn' });
+    return { ok: false, reason: 'unsupported-kind' };
   }
 
   openFeature(id) {
@@ -731,6 +858,7 @@ class App {
   hangItem(id) {
     const item = this.gallery.get(id);
     if (!item || !this.gallery.pin(id)) return false;
+    this.customWallImage = null;
     this.saveStores();
     this.refreshWallArt();
     this.galleryView.close('hang');
@@ -742,7 +870,14 @@ class App {
 
   unhangWall() {
     const item = this.gallery.wallItem;
-    if (!this.gallery.unpin()) return false;
+    if (!this.gallery.unpin()) {
+      if (!this.customWallImage) return false;
+      this.customWallImage = null;
+      this.refreshWallArt();
+      this.hud.toast('Took the picture down.', { icon: 'i-frame', duration: 2400 });
+      return true;
+    }
+    this.customWallImage = null;
     this.saveStores();
     this.refreshWallArt();
     this.hud.toast(item ? `Took "${item.title}" down from the wall.` : 'Took the picture down.', { icon: 'i-frame', duration: 2400 });
@@ -812,12 +947,16 @@ class App {
     this.layoutSoon();
   }
 
-  /** The wall frame shows the pinned drawing, else the newest drawing (or the easel's last finished one). */
+  /** The wall frame shows the pinned drawing, imported picture, or newest drawing. */
   refreshWallArt() {
     if (!this.studio) return;
     const pinned = this.gallery.wallItem;
     if (pinned) {
       this.studio.setWallArt(pinned.data, { title: pinned.title, pinned: true });
+      return;
+    }
+    if (this.customWallImage) {
+      this.studio.setWallImage(this.customWallImage.img, { title: this.customWallImage.title, pinned: true });
       return;
     }
     const latest = this.gallery.latestDrawing();
@@ -1593,6 +1732,16 @@ class App {
       unlock();
       this.onKey(e);
     });
+    window.addEventListener('dragover', (e) => {
+      if (e.dataTransfer?.types?.includes('Files')) e.preventDefault();
+    });
+    window.addEventListener('drop', (e) => {
+      const file = e.dataTransfer?.files?.[0];
+      if (!file) return;
+      e.preventDefault();
+      unlock();
+      void this.handleIncomingAsset({ file });
+    });
   }
 
   onKey(e) {
@@ -2011,6 +2160,12 @@ class App {
         get standalone() { return window.matchMedia?.('(display-mode: standalone)').matches ?? false; },
       },
       save: () => { app.saveStores(); app.saveFriendsNow(); return app.save(); },
+      exports: {
+        drawingPng: (drawing, opts) => renderDrawingToPng(drawing, opts),
+        phraseWav: (phrase, opts) => renderPhraseToWav(phrase, opts),
+        petGlb: () => exportPetToGlb(app.model),
+        importAsset: (item) => app.handleIncomingAsset(item),
+      },
       reset: () => {
         app.resetting = true; // the reload's pagehide must not save the cleared pet again
         app.clearAllSaves();

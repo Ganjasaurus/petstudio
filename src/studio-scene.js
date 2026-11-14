@@ -1464,6 +1464,56 @@ export class StudioScene {
   }
 
   /**
+   * Frames an imported bitmap/image in the 3D studio wall frame with optional plaque.
+   */
+  setWallImage(img, { title = 'Imported Art', pinned = true } = {}) {
+    const { ctx, canvas, texture, plaque, rosette, plaqueCtx, plaqueTexture } = this.creation;
+    const S = canvas.width;
+    ctx.fillStyle = '#fffaf1';
+    ctx.fillRect(0, 0, S, S);
+    const iw = img.naturalWidth || img.width || S;
+    const ih = img.naturalHeight || img.height || S;
+    if (iw > 0 && ih > 0) {
+      const pad = Math.round(S * 0.045);
+      const avail = S - pad * 2;
+      const scale = Math.min(avail / iw, avail / ih);
+      const dw = iw * scale;
+      const dh = ih * scale;
+      ctx.drawImage(img, (S - dw) / 2, (S - dh) / 2, dw, dh);
+    }
+    texture.needsUpdate = true;
+    plaque.visible = !!pinned;
+    rosette.visible = !!pinned;
+    if (pinned) {
+      const W = plaqueCtx.canvas.width;
+      const Hh = plaqueCtx.canvas.height;
+      const g = plaqueCtx.createLinearGradient(0, 0, 0, Hh);
+      g.addColorStop(0, '#f8d77a');
+      g.addColorStop(1, '#dfae45');
+      plaqueCtx.fillStyle = g;
+      plaqueCtx.fillRect(0, 0, W, Hh);
+      plaqueCtx.strokeStyle = 'rgba(120, 80, 20, 0.45)';
+      plaqueCtx.lineWidth = 6;
+      plaqueCtx.strokeRect(5, 5, W - 10, Hh - 10);
+      plaqueCtx.fillStyle = '#5a3c12';
+      plaqueCtx.textAlign = 'center';
+      plaqueCtx.textBaseline = 'middle';
+      let size = 44;
+      const text = title || 'Imported Art';
+      plaqueCtx.font = `800 ${size}px ui-rounded, "Segoe UI", system-ui, sans-serif`;
+      while (size > 26 && plaqueCtx.measureText(text).width > W - 48) {
+        size -= 2;
+        plaqueCtx.font = `800 ${size}px ui-rounded, "Segoe UI", system-ui, sans-serif`;
+      }
+      let shown = text;
+      while (shown.length > 3 && plaqueCtx.measureText(shown).width > W - 48) shown = `${shown.slice(0, -2)}…`;
+      plaqueCtx.fillText(shown, W / 2, Hh / 2 + 2);
+      plaqueTexture.needsUpdate = true;
+    }
+    this.wallArt = { hasArt: true, pinned: !!pinned, title: pinned ? title : '', externalImage: true };
+  }
+
+  /**
    * Per-frame update.
    * @param {number} dt
    * @param {{activity: string, petHead?: THREE.Vector3, petFocus?: THREE.Vector3, dream?: 'music'|'drawing'|null}} frame

@@ -14,6 +14,14 @@ import { ORIGIN_LABELS, KIND_LABELS } from './gallery-store.js';
 import { NUDGES, socialLabel } from './creative-engine.js';
 import { paintDrawing, paintPhraseRoll, fitCanvas } from './creation-render.js';
 import { phraseSimilarity, drawingSimilarity, drumByMidi } from './teaching-core.js';
+import {
+  DRAWING_SEND_TARGETS,
+  MELODY_SEND_TARGETS,
+  downloadDrawingPng,
+  downloadPhraseWav,
+  sendDrawingToApp,
+  sendPhraseToApp,
+} from './exporters.js';
 
 const useIcon = (id) => `<svg class="ico" aria-hidden="true"><use href="#${id}"></use></svg>`;
 const FILTERS = Object.freeze(['all', 'music', 'drawing', 'favorites']);
@@ -56,6 +64,7 @@ export class GalleryView {
     this.player = null;
     this.replay = null;
     this.confirmDelete = null;
+    this.sendCardId = null;
     this.raf = 0;
     this._build();
     store.onChange(() => {
@@ -129,6 +138,7 @@ export class GalleryView {
     if (!this.dialog.open) return;
     this.player = null;
     this.replay = null;
+    this.sendCardId = null;
     this.dialog.close();
     cancelAnimationFrame(this.raf);
     this.raf = 0;
@@ -138,6 +148,7 @@ export class GalleryView {
   setFilter(f) {
     if (!FILTERS.includes(f)) return;
     this.filter = f;
+    this.sendCardId = null;
     this.render();
   }
 
@@ -192,6 +203,8 @@ export class GalleryView {
     const tags = it.tags.map((t) => `<span class="gl-tag" data-tag="${t}">${NUDGES[t]?.label ?? t}</span>`).join('');
     const isDrawing = it.kind === 'drawing';
     const confirming = this.confirmDelete?.id === it.id;
+    const sendOpen = this.sendCardId === it.id;
+    const targets = isDrawing ? DRAWING_SEND_TARGETS : MELODY_SEND_TARGETS;
     return `
       <li class="gl-card${selected ? ' selected' : ''}" data-id="${it.id}" data-kind="${it.kind}" data-origin="${it.origin}">
         <div class="gl-thumb">
@@ -211,6 +224,13 @@ export class GalleryView {
             : `<button type="button" class="btn gl-act" data-gl="listen" aria-label="Listen here" title="Listen here without the pet">${useIcon('i-listen')}<span class="gl-lbl">Listen</span></button>`}
           <button type="button" class="btn gl-act gl-mini" data-gl="compare" aria-pressed="${selected}" aria-label="Compare" title="Pick two to compare side by side">${useIcon('i-compare')}<span class="gl-lbl">Compare</span></button>
           <button type="button" class="btn gl-act gl-mini gl-del${confirming ? ' confirm' : ''}" data-gl="delete" aria-label="${confirming ? 'Tap again to delete' : 'Delete'}" title="${confirming ? 'Tap again to delete' : 'Delete'}">${useIcon('i-trash')}<span class="gl-lbl">${confirming ? 'Sure?' : 'Delete'}</span></button>
+        </div>
+        <div class="gl-export">
+          <button type="button" class="btn gl-exp-btn" data-gl="export" aria-label="${isDrawing ? 'Save PNG' : 'Save WAV'}: ${esc(it.title)}">${useIcon('i-download')}<span>${isDrawing ? 'Save PNG' : 'Save WAV'}</span></button>
+          <button type="button" class="btn gl-exp-btn" data-gl="send-toggle" aria-expanded="${sendOpen}" aria-label="Send ${esc(it.title)} to another app">${useIcon('i-send')}<span>Send to…</span></button>
+        </div>
+        <div class="rf-send-tray"${sendOpen ? '' : ' hidden'} role="group" aria-label="Send ${esc(it.title)} to app">
+          ${targets.map((t) => `<button type="button" class="rf-chip-btn" data-gl="send-app" data-to="${t.to}" data-role="${t.role}">${esc(t.label)}</button>`).join('')}
         </div>
         ${parent ? `<button type="button" class="gl-link" data-gl="vs-lesson">${useIcon('i-compare')}Compare with your lesson</button>` : ''}
       </li>`;
@@ -273,6 +293,38 @@ export class GalleryView {
       case 'vs-lesson': {
         const it = this.store.get(id);
         if (it?.parentId) this.compare(it.parentId, id);
+        break;
+      }
+      case 'export': {
+        const it = this.store.get(id);
+        if (!it) break;
+        const job = it.kind === 'drawing'
+          ? downloadDrawingPng(it.data, it.title)
+          : downloadPhraseWav(it.data, it.title, { duetSplit: it.social?.mode === 'jam' ? it.social.split : null });
+        job.then(({ filename }) => this._hint(`Saved ${filename}.`)).catch(() => this._hint('Export failed right now.'));
+        break;
+      }
+      case 'send-toggle': {
+        this.sendCardId = this.sendCardId === id ? null : id;
+        this.render();
+        break;
+      }
+      case 'send-app': {
+        const it = this.store.get(id);
+        const target = b.dataset.to;
+        const role = b.dataset.role || '';
+        if (!it || !target) break;
+        this._hint(`Opening ${b.textContent.trim()}…`);
+        if (it.kind === 'drawing') {
+          void sendDrawingToApp(it.data, it.title, target, { role, onStatus: (msg) => this._hint(msg) });
+        } else {
+          void sendPhraseToApp(it.data, it.title, target, {
+            duetSplit: it.social?.mode === 'jam' ? it.social.split : null,
+            onStatus: (msg) => this._hint(msg),
+          });
+        }
+        this.sendCardId = null;
+        this.render();
         break;
       }
       case 'delete': this._delete(id); break;
